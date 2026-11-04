@@ -1,0 +1,12 @@
+earthengine-api==1.7.51
+geopandas==1.2.0
+matplotlib==3.11.2
+numpy==2.5.4
+pandas==3.1.0
+pyogrio==0.13.0
+PyYAML==6.0.3
+rasterio==1.5.2
+requests==2.34.2
+shapely==2.2.0
+pytest==9.2.0
+ruff==0.17.3

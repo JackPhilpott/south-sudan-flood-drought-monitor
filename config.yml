@@ -1,0 +1,60 @@
+# Settings for the South Sudan flood and drought monitor.
+# Paths are relative to this file. The Earth Engine project ID is not set here:
+# it comes from the EE_PROJECT environment variable.
+
+period:
+  start: "2019-01"            # first month reported in county_monthly.csv
+  end: "2025-12"              # last month reported (inclusive)
+
+paths:
+  boundaries: data/ssd_admin2_simplified.geojson
+  outputs: outputs
+
+earth_engine:
+  asset_folder: ssd_monitor   # results are exported to projects/$EE_PROJECT/assets/ssd_monitor/
+
+rainfall:
+  collection: UCSB-CHG/CHIRPS/PENTAD
+  normal_years: [1991, 2020]  # the normal is the mean monthly total over these years
+  min_normal_mm: 20           # % of normal is left blank when the normal is below this (dry months)
+  scale_m: 5566               # CHIRPS native resolution (0.05 degrees)
+  years_per_task: 35          # 1991-2025 in one export: the data is small
+
+vegetation:
+  collection: MODIS/061/MOD13Q1
+  baseline_years: [2001, 2020]
+  max_summary_qa: 1           # keep good (0) and marginal (1) pixels; drop snow (2) and cloud (3)
+  worldcover_collection: ESA/WorldCover/v200
+  exclude_worldcover: [50, 60, 70, 80]  # built-up, bare or sparse vegetation, snow and ice, permanent water
+  scale_m: 250                # MODIS native resolution
+  years_per_task: 5
+
+flood:
+  scale_m: 100                # processing scale for both sensors (see README: why 100 m)
+  sar:
+    collection: COPERNICUS/S1_GRD
+    orbit_passes: [ASCENDING, DESCENDING]  # each pass is compared with its own reference
+    reference_years: [2017, 2018, 2019]    # dry-season reference: median of these months...
+    reference_months: [1, 2, 3]            # ...in these years, before the 2019 floods
+    drop_db: 3.0              # flagged when VV or VH is this much darker than the reference...
+    vv_water_max_db: -15.0    # ...and VV is darker than this (open water is dark in VV)
+  optical:
+    collection: COPERNICUS/S2_SR_HARMONIZED
+    cloud_score_collection: GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED
+    max_scene_cloud_pct: 80   # skip scenes that are almost all cloud, to save compute
+    min_clear_score: 0.6      # Cloud Score+ cs_cdf; pixels below this are treated as cloud
+    mndwi_water_min: 0.0      # water where the month's median MNDWI is above this
+  permanent_water:
+    collection: JRC/GSW1_4/GlobalSurfaceWater
+    min_occurrence_pct: 80    # water in at least 80% of observations 1984-2021: not a flood
+  terrain:
+    dem: WWF/HydroSHEDS/03VFDEM
+    max_slope_deg: 5          # steeper pixels are excluded (radar shadow, no standing water)
+  min_connected_pixels: 8     # drop isolated flagged patches smaller than this
+  years_per_task: 1
+  frequency_cell_deg: 0.005   # cell size of the downloaded flood-frequency GeoTIFF (~550 m)
+
+alerts:
+  rain_pct_normal_below: 75   # rainfall flag: below 75% of the 1991-2020 normal
+  ndvi_anomaly_below: -1.0    # vegetation flag: more than 1 standard deviation below the 2001-2020 mean
+  flooded_pct_above: 10       # flood flag: more than 10% of the county's area flooded

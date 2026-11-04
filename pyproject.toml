@@ -1,0 +1,20 @@
+[project]
+name = "ssd-monitor"
+version = "0.1.0"
+description = "Monthly flood, rainfall and vegetation indicators for South Sudan's counties, from open satellite data"
+requires-python = ">=3.12"
+license = "MIT"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "scripts"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ssd_monitor", "monitor"]

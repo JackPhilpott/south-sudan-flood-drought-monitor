@@ -1,0 +1,22 @@
+# Environments and secrets
+.venv/
+.env
+*.json.key
+*service-account*.json
+*credentials*.json
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# Local Claude Code settings
+.claude/settings.local.json
+# Raw downloads (scripts/monitor.py boundaries fetches them again)
+data/raw/
+# Editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
