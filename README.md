@@ -20,16 +20,47 @@ knowledge of the method and using open data only. It is not REACH's code. It rep
 indicator on its own, with a simple, documented alert threshold. It does not combine them into
 an index like the SMI.
 
-**Status:** first Earth Engine run pending. The code, tests and CI are in place, but the Earth
-Engine exports have not run yet, so there are no outputs or figures yet.
+**Flood extent here means open water only.** Flooded grassland and swamp, which make up much of
+the flooding in Jonglei, Unity and the Sudd, turn brighter on radar rather than darker and are not
+detected. Flooded areas in this repo therefore sit well below the figures in humanitarian reports
+on the 2019-2022 floods. See [Limitations](#limitations).
 
-## Figures
+## Figures and results
 
-*The figures will appear here after the first Earth Engine run: a flood frequency map for
-2019-2025, a national monthly chart of rainfall and flooded area, and county maps for the peak
-flood month and for a drought month.*
+![Flood frequency map of South Sudan, 2019-2025](outputs/figures/flood_frequency.png)
 
-<!-- FIGURES -->
+*Number of months each area had open water outside permanent water, 2019-2025. The persistent
+water around Rubkona and Guit in Unity stands out, along with the Nile corridor through Jonglei,
+the Bahr el Ghazal and Bahr el Arab system and the Upper Nile floodplains.*
+
+![National monthly rainfall (% of normal) and flooded area, 2019-2025](outputs/figures/national_monthly.png)
+
+*Top: national rainfall as % of the 1991-2020 normal. Bottom: total open water outside permanent
+water. The rise from 2022 is mostly persistent water in Unity; the high early-2019 values are
+largely false detections on burnt land (see [Limitations](#limitations)).*
+
+| | |
+| :- | :- |
+| ![Flooded share of each county, August 2025](outputs/figures/county_flood_peak.png) | ![NDVI anomaly by county, January 2019](outputs/figures/county_ndvi_drought.png) |
+| *Flooded share of each county in August 2025, the month with the most open water.* | *NDVI anomaly in January 2019, the month with the most counties flagged.* |
+
+What the first full run (January 2019 to December 2025, 79 counties) shows:
+
+- **Coverage.** At least one sensor saw 91-97% of the country every month, so very few
+  county-months lack a flood value.
+- **Rainfall.** The July-October rains were above normal in 2019 in Jonglei (116%), Eastern
+  Equatoria (117%) and Upper Nile (111%), and close to or below normal across the country in 2021
+  (87-99%), the year of the Unity floods, consistent with floods driven by high river levels from
+  upstream rather than by local rain. 622 of the 4,340 county-months with a rainfall normal of at least 20 mm were flagged below
+  75% of normal, including 33 in Eastern Equatoria in 2021.
+- **Open water.** The largest monthly total was 6,021 km² in August 2025. In Unity the July-November
+  average rose from 81-207 km² in 2019-2021 to 1,031-2,154 km² in 2022-2025, as floodwater around
+  Rubkona, Guit and Mayendit stayed and became open water. Rubkona was more than 10% flooded in 39
+  of the 84 months. The flood flag was raised for 53 county-months in all, every one in Unity apart
+  from one false detection in Warrap in April 2019, and for none in 2020 or 2021 (see
+  [Limitations](#limitations)).
+- **Vegetation.** 222 county-months (3.3%) were flagged for low NDVI, most of them in January 2019
+  (21 counties) and the 2022 rainy season.
 
 ## How it works
 
@@ -53,16 +84,21 @@ equivalent of the REACH flood frequency map.
 2. **`submit`** starts the Earth Engine work as batch exports to assets in your Earth Engine
    project, split into chunks of years (see [Scales and quotas](#scales-and-quotas)). It skips
    exports that are done or running, so you run it again until everything has finished.
-3. **`status`** lists each export as done, running, ready, waiting or failed.
+   `--flood-years 2019-2022` limits the flood exports to some years. **`cost-test`** runs one
+   month of every export first, to measure the cost before committing to the full run.
+3. **`status`** lists each export as done, running, ready, waiting or failed, with the EECU it used.
 4. **`download`** reads the finished exports into `outputs/raw/` and writes the flood-frequency
    GeoTIFF.
 5. **`build`** adds the normals, anomalies, flooded shares and alert flags, and writes
    `outputs/county_monthly.csv` and `outputs/national_monthly.csv`. No Earth Engine.
 6. **`plots`** draws the four figures from those files. No Earth Engine.
+7. **`benchmark`** compares the flood layers with JRC's monthly water maps (see
+   [Agreement with JRC monthly water](#agreement-with-jrc-monthly-water)).
 
-All Earth Engine code is in five modules ([`earthengine`](src/ssd_monitor/earthengine.py),
+All Earth Engine code is in six modules ([`earthengine`](src/ssd_monitor/earthengine.py),
 [`rainfall`](src/ssd_monitor/rainfall.py), [`vegetation`](src/ssd_monitor/vegetation.py),
-[`flood`](src/ssd_monitor/flood.py) and [`exports`](src/ssd_monitor/exports.py)). Everything
+[`flood`](src/ssd_monitor/flood.py), [`validation`](src/ssd_monitor/validation.py) and
+[`exports`](src/ssd_monitor/exports.py)). Everything
 else is plain Python and is tested without an Earth Engine account. Settings are in
 [`config.yml`](config.yml); the Earth Engine project ID comes from the `EE_PROJECT` environment
 variable.
@@ -91,44 +127,69 @@ Earth Engine, so anyone can recompute them from the CSVs. They are left blank wh
 
 ### Flood extent, step by step
 
-The method follows the structure of the
+The structure follows the
 [UN-SPIDER recommended practice for flood mapping with Sentinel-1 in Earth Engine](https://www.un-spider.org/advisory-support/recommended-practices/recommended-practice-google-earth-engine-flood-mapping):
-compare radar backscatter with a dry reference, then remove permanent water, steep slopes and
-isolated pixels. UN-SPIDER maps a single event; this repo adapts it to run every month and adds
-Sentinel-2 optical data, as the original system did. The code is in
-[`src/ssd_monitor/flood.py`](src/ssd_monitor/flood.py) and every threshold is in `config.yml`.
+find water on radar, then remove permanent water, steep slopes and isolated pixels. UN-SPIDER maps
+a single event; this repo runs every month and adds Sentinel-2 optical data, as the original system
+did. The code is in [`src/ssd_monitor/flood.py`](src/ssd_monitor/flood.py) and every threshold is
+in `config.yml`.
 
-1. **Dry-season radar reference.** For each orbit direction (ascending and descending), the median
-   VV and VH backscatter of all Sentinel-1 scenes from January to March of 2017, 2018 and 2019:
-   three dry seasons before the 2019 floods. It is exported once as an asset and reused for every
-   month. A fixed reference, rather than the dry season before each month, means floods that last
-   through the dry season still show up.
-2. **Monthly radar composite.** The median VV and VH of the month's scenes, for each direction
-   separately, because the two directions see the ground at different angles.
-3. **Radar flag.** Calm open water reflects the radar signal away from the satellite, so it looks
-   dark. A pixel is flagged when its backscatter has dropped by at least 3 dB from the reference
-   (to half or less) in VV or VH, **and** VV is below −15 dB, so that only dark, water-like pixels
-   count. It is flagged if either orbit direction flags it.
-4. **Optical flag.** Sentinel-2 surface reflectance scenes from the month, skipping scenes that are
+1. **Radar flag.** Calm open water reflects the radar signal away from the satellite, so it looks
+   dark. For each orbit direction (ascending and descending, which see the ground at different
+   angles), the month's median VV backscatter is taken, and a pixel is flagged when it is at or
+   below −18 dB. It is flagged if either direction flags it.
+2. **Optical flag.** Sentinel-2 surface reflectance scenes from the month, skipping scenes that are
    more than 80% cloud. Cloudy pixels are masked with Cloud Score+ (clear score below 0.6). For
    the rest, MNDWI = (green − SWIR1) / (green + SWIR1), and a pixel is flagged when the month's
    median MNDWI of its clear observations is above 0.
-5. **Combine.** A pixel is flooded where either sensor flags it, except:
+3. **Combine.** A pixel is flooded where either sensor flags it, except:
    - permanent water: water in at least 80% of observations in JRC Global Surface Water (1984-2021);
    - steep slopes above 5° (HydroSHEDS), where radar shadow looks like water and water doesn't stand;
    - isolated patches of fewer than 8 connected pixels (8 ha at 100 m), which are mostly noise.
-6. **County areas.** Earth Engine sums the pixel areas per county: flooded km², the km² each
+4. **Store each month once.** The month's four flags (flooded, flagged by radar, flagged by optical,
+   observed by either) are packed into one byte per pixel, and each year's twelve months are
+   exported as one image asset. Everything below reads those assets, so the expensive part runs
+   once per month.
+5. **County areas.** Earth Engine sums the pixel areas per county: flooded km², the km² each
    sensor flagged (often both), and the km² that at least one sensor observed that month. If no
    sensor saw any of a county that month, its flood values are left blank rather than set to 0.
-7. **Flood frequency.** For each year, the number of months each 100 m pixel was flooded. The
-   yearly counts are added up for 2019-2025 and averaged into 0.005° cells (about 550 m) for the
-   GeoTIFF and the map.
+6. **Flood frequency.** The number of months each 100 m pixel was flooded over 2019-2025, averaged
+   into 0.005° cells (about 550 m) for the GeoTIFF and the map.
 
-Where it departs from UN-SPIDER: it uses the change in dB in VV or VH (UN-SPIDER uses a ratio
-threshold of 1.25 on one polarisation), adds the absolute VV darkness check, takes the month's
-median rather than a single mosaic, and reduces speckle by reading the imagery at 100 m instead
-of applying a 50 m smoothing filter. Permanent water uses Global Surface Water *occurrence* where
-UN-SPIDER uses *seasonality*.
+**Why a darkness rule and not change detection.** The first version of this repo followed
+UN-SPIDER more closely: a pixel was water when it had become at least 3 dB darker than a
+dry-season reference (the median of January-March 2017-2019) and VV was below −15 dB. Checked
+against JRC's Landsat water maps (next section), it found less than half of the water Landsat saw.
+The reason is the ground: the clay plains of Jonglei and Unity are already dark on radar in the
+dry season, so water there is dark but not much darker than the reference. A plain darkness
+threshold agreed better with Landsat on both counts, so it replaced the change rule. The change
+rule is kept in [`validation.py`](src/ssd_monitor/validation.py) only for that comparison.
+
+Other differences from UN-SPIDER: the month's median rather than a single mosaic; speckle reduced
+by reading the imagery at 100 m instead of a 50 m smoothing filter; permanent water from Global
+Surface Water *occurrence* rather than *seasonality*.
+
+### Agreement with JRC monthly water
+
+[JRC's Global Surface Water monthly history](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_4_MonthlyHistory)
+maps open water month by month from Landsat, independently of this project. `benchmark` compares
+the flood layers with it pixel by pixel at 100 m, where Landsat had a view, leaving out permanent
+water and steep slopes, in six flood-prone counties (Bor South, Fangak and Twic East in Jonglei;
+Panyijiar and Rubkona in Unity; Luakpiny/Nasir in Upper Nile) in three months (September 2020 and
+October 2021, both flood seasons, and February 2021, dry season). Recall is the share of JRC's water
+that a layer also flags; precision is the share of a layer's flagged area that JRC also calls water.
+Both are pooled over the 18 county-months by area (1,093 km² of JRC water in total):
+
+| Layer | Flagged | Recall | Precision |
+| :- | -: | -: | -: |
+| Flood layer used here (radar or optical, after the patch filter) | 1,135 km² | 0.65 | 0.62 |
+| Radar, darkness rule (used) | 880 km² | 0.61 | 0.76 |
+| Radar, dry-season change rule (first design, dropped) | 962 km² | 0.39 | 0.44 |
+| Optical, MNDWI | 859 km² | 0.45 | 0.58 |
+
+These figures measure **agreement with JRC monthly water, not accuracy**. JRC has its own errors,
+it only covers open water that Landsat saw (so flooding under vegetation is missing from both),
+and it stops at the end of 2021. The per county-month figures are in `outputs/benchmark_jrc.csv`.
 
 ### Alert flags
 
@@ -155,16 +216,24 @@ each pixel is one hectare, still fine enough for floodplains and county totals, 
 imagery from Earth Engine's averaged pyramid also smooths radar speckle. The cost is that floods
 narrower than about 100 m, along small channels for example, are missed or diluted.
 
-The work runs as 21 batch exports rather than interactive requests, so no single request hits
+The work runs as 20 batch exports rather than interactive requests, so no single request hits
 Earth Engine's time limits and a failed export can be rerun on its own:
 
 | Export | Count | Covers |
 | :- | :- | :- |
 | `rainfall_1991_2025` | 1 | all years, as the data is small |
 | `ndvi_<years>` | 5 | five years each, 2001-2025 |
-| `s1_reference` | 1 | the radar reference, computed once and reused |
-| `flood_table_<year>` | 7 | one year each, 2019-2025 |
-| `flood_frequency_<year>` | 7 | one year each, 2019-2025 |
+| `flood_layers_<year>` | 7 | one year each, 2019-2025: the expensive part |
+| `flood_table_<year>` | 7 | county areas read from that year's layers |
+
+**Measured cost.** By Earth Engine's task records, the flood layers for all 84 months used 61.3
+EECU-hours. The yearly cost follows the number of Sentinel-1 scenes: 9.9, 10.7 and 8.2 EECU-hours
+for 2019-2021, 7.3, 7.0 and 8.0 for 2022-2024 (Sentinel-1A alone, about half the scenes) and 10.3
+for 2025 (Sentinel-1C joined, and more Sentinel-2 scenes). The task records of table exports
+under-report their cost, so those were profiled instead: one month of county tables cost about
+205 EECU-seconds for flood, 36-76 for NDVI and under 1 for rainfall. Before the full run,
+`cost-test` measured one month and a profiler run on single counties showed where the time went;
+this led to the single-pass design and to a cheaper patch filter that gives identical results.
 
 ### Outputs
 
@@ -175,6 +244,7 @@ Earth Engine's time limits and a failed export can be rerun on its own:
 | `outputs/raw/rainfall.csv`, `ndvi.csv`, `flood.csv` | what Earth Engine returned, so everything else rebuilds without it |
 | `outputs/flood_frequency_2019_2025.tif` | GeoTIFF: band 1 months flooded × 10, band 2 % of the cell excluded (permanent water or steep slope) |
 | `outputs/figures/*.png` | the four figures |
+| `outputs/benchmark_jrc.csv`, `benchmark_jrc_summary.csv` | the agreement check with JRC monthly water, per county-month and pooled |
 
 Columns of `county_monthly.csv`: `county_code`, `county_name`, `state_code`, `state_name`,
 `month`, `area_km2`; `rain_mm`, `rain_normal_mm`, `rain_pct_normal`; `ndvi`,
@@ -204,13 +274,18 @@ non-commercial use, see [Earth Engine access](https://developers.google.com/eart
 earthengine authenticate            # once per machine; opens a browser
 export EE_PROJECT=your-project-id   # PowerShell: $env:EE_PROJECT = "your-project-id"
 
-python scripts/monitor.py submit    # starts the rainfall, NDVI and radar-reference exports
-python scripts/monitor.py status    # progress (the Code Editor's Tasks tab shows the same)
-python scripts/monitor.py submit    # once s1_reference is done: starts the 14 flood exports
-python scripts/monitor.py download  # once everything is done
-python scripts/monitor.py build     # county_monthly.csv and national_monthly.csv
-python scripts/monitor.py plots     # the four figures
+python scripts/monitor.py cost-test  # one month of everything; run again for the estimate
+python scripts/monitor.py submit     # starts rainfall, NDVI and the yearly flood layers
+python scripts/monitor.py status     # progress and EECU used (the Code Editor's Tasks tab too)
+python scripts/monitor.py submit     # as layers finish: starts each year's flood table
+python scripts/monitor.py download   # once everything is done
+python scripts/monitor.py build      # county_monthly.csv and national_monthly.csv
+python scripts/monitor.py plots      # the four figures
+python scripts/monitor.py benchmark  # agreement with JRC monthly water (interactive)
 ```
+
+`submit --flood-years 2019-2022` runs part of the flood period first, to check the cost before
+committing to the rest.
 
 `build` and `plots` only read `outputs/`, so once the outputs are committed you can rebuild the
 tables and figures without Earth Engine.
@@ -238,10 +313,11 @@ docker run --rm \
 ## Tests and CI
 
 The [tests](tests/) cover the parts that don't need Earth Engine, using four invented counties
-and invented values: the settings, month and year windows, planning the exports, turning Earth
-Engine's output into tables (including months with no data), the normals and anomalies, flooded
-shares, the alert thresholds, the national summary, the boundary simplification, the GeoTIFF, the
-four figures, and the `build` and `plots` commands end to end. One test also checks that the
+and invented values: the settings, month and year windows, planning the exports and the cost
+test, how the monthly flood flags are packed into one byte, turning Earth Engine's output into
+tables (including months with no data), the normals and anomalies, flooded shares, the alert
+thresholds, the national summary, the JRC agreement summary, the boundary simplification, the
+GeoTIFF and its download tiles, the four figures, and the `build` and `plots` commands end to end. One test also checks that the
 offline modules never import Earth Engine.
 
 [GitHub Actions](.github/workflows/ci.yml) runs on every push and pull request: `ruff check`,
@@ -254,9 +330,9 @@ tests inside it. CI makes no Earth Engine calls and holds no credentials.
 | :- | :- | :- |
 | [CHIRPS](https://developers.google.com/earth-engine/datasets/catalog/UCSB-CHG_CHIRPS_PENTAD) pentads (UCSB Climate Hazards Center) | rainfall | public domain: the authors have waived all copyright. Funk et al. (2015) |
 | [MODIS MOD13Q1 v6.1](https://developers.google.com/earth-engine/datasets/catalog/MODIS_061_MOD13Q1) (NASA LP DAAC) | NDVI | no restrictions on use or redistribution. Didan (2021) |
-| [Sentinel-1 GRD](https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S1_GRD) and [Sentinel-2 surface reflectance](https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S2_SR_HARMONIZED) (Copernicus, ESA) | flood extent | [Copernicus Sentinel data terms](https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice): free and open, with attribution. The outputs contain modified Copernicus Sentinel data 2017-2025 |
+| [Sentinel-1 GRD](https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S1_GRD) and [Sentinel-2 surface reflectance](https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S2_SR_HARMONIZED) (Copernicus, ESA) | flood extent | [Copernicus Sentinel data terms](https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice): free and open, with attribution. The outputs contain modified Copernicus Sentinel data 2019-2025 |
 | [Cloud Score+](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_CLOUD_SCORE_PLUS_V1_S2_HARMONIZED) (Google) | Sentinel-2 cloud mask | CC BY 4.0. Pasquarella et al. (2023) |
-| [JRC Global Surface Water v1.4](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_4_GlobalSurfaceWater) | permanent water mask | free, without restriction of use, under the Copernicus programme. Source: EC JRC/Google. Pekel et al. (2016) |
+| [JRC Global Surface Water v1.4](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_4_GlobalSurfaceWater) and [monthly history](https://developers.google.com/earth-engine/datasets/catalog/JRC_GSW1_4_MonthlyHistory) | permanent water mask; agreement check | free, without restriction of use, under the Copernicus programme. Source: EC JRC/Google. Pekel et al. (2016) |
 | [ESA WorldCover 2021 v200](https://developers.google.com/earth-engine/datasets/catalog/ESA_WorldCover_v200) | NDVI land mask | CC BY 4.0. Zanaga et al. (2022) |
 | [HydroSHEDS void-filled DEM](https://developers.google.com/earth-engine/datasets/catalog/WWF_HydroSHEDS_03VFDEM) (WWF) | slope mask | free for non-commercial and commercial use under the [HydroSHEDS licence](https://www.hydrosheds.org/page/license). Lehner et al. (2008) |
 | [OCHA COD-AB South Sudan](https://data.humdata.org/dataset/cod-ab-ssd) (South Sudan IMWG, NBS, IOM and OCHA, via HDX) | county boundaries | [CC BY-IGO](https://creativecommons.org/licenses/by/3.0/igo/legalcode). A simplified copy is committed in [`data/`](data/README.md) |
@@ -268,11 +344,50 @@ United Nations. Final status of the Abyei area is not yet determined.
 
 ## Limitations
 
-**Radar misses flooding under vegetation.** The radar flag looks for surfaces that have become
-darker. Where water stands under tall grass, papyrus or trees, as in much of the Sudd, the radar
-signal bounces between the water and the stems and the pixel gets *brighter*, so it is not
-flagged. Optical imagery can't see through the canopy either. Flooded area in the Sudd is
-therefore underestimated.
+**Flood extent is open water only.** The radar flag looks for dark surfaces. Where water stands
+under grass, papyrus or trees, as across much of Jonglei, Unity and the Sudd, the radar signal
+bounces between the water and the stems and the pixel gets *brighter*. Normal wet-season vegetation
+and wet soil brighten too, so brightening can't be used as a flood signal on its own, and optical
+imagery can't see through the canopy either. In Twic East (Jonglei) in September 2020, a month of
+severe flooding, most of the county turned brighter on radar than in the dry season, yet JRC's
+Landsat maps show only 80 km² of open water outside permanent water, about 1.3% of the county, and
+this repo's flood layer flags 102 km² (`outputs/benchmark_jrc.csv`). Flooded areas here therefore
+sit well below the figures in humanitarian reports on the 2019-2022 floods, which count flooded
+land, crops and homes.
+
+**The NDVI baseline doesn't account for the long-term greening trend.** NDVI over South Sudan has
+risen across 2001-2025, so against a fixed 2001-2020 baseline the recent years read as greener than
+normal, and the vegetation flag fires less and less: on 22.9% of county-months in 2001-2010, 8.0%
+in 2011-2020 and 3.3% in 2019-2025 (from `outputs/raw/ndvi.csv`). As a result, the January 2022
+drought in Eastern Equatoria that the original system mapped doesn't show up as an NDVI flag here:
+Eastern Equatoria was the only state close to its normal that month, while the rest of the country
+was well above it. The rainfall indicator does pick it up: the 2021 rains in Eastern Equatoria were
+below 75% of normal in March, June and October. A detrended or rolling baseline would fix this, but
+that is not done here.
+
+**Dark dry land is flagged as water in the dry season.** Burnt grassland and some dry soils are as
+dark on radar as water. In March 2019 the radar flagged 320-410 km² of "water" in each of Gogrial
+East, Tonj North and Tonj South (Warrap) that optical imagery did not see; 38-51% of it lay on land
+that MODIS mapped as burnt that dry season, while burnt land covered only 16-22% of those counties.
+In Kapoeta East (Eastern Equatoria) similar radar-only detections fall on unburnt, semi-arid land.
+These false detections push up the dry-season totals, explain the high values in early 2019, and
+are why the 2019 flood season does not stand out in the national chart. The radar rule needs a
+dry-season safeguard (for example using radar only where optical imagery was cloudy), which is not
+done yet.
+
+**Open water that stays is counted as flooded every month.** The permanent-water mask comes from
+Landsat observations up to 2021, so water bodies that formed during the 2019-2022 floods and never
+drained, as around Rubkona, Guit and Mayendit in Unity, count as flooded in every later month. This
+drives most of the rise in the national total from 2022. More Sentinel-1 and Sentinel-2 scenes in
+2025 probably add detections too, so totals for different years are not strictly comparable.
+
+**The flood flag rarely fires.** Open water seldom covers more than 10% of a county, so the flag was
+raised for only 53 county-months, almost all in Unity after 2022, and not at all in 2020 or 2021.
+For flooding as humanitarian reports describe it, the flooded km² and the flood-frequency map are
+more informative than the flag; a lower or county-specific threshold would be a better test.
+
+**Scene edges leave some straight lines.** A few thin straight lines in the flood-frequency map, in
+the Equatorias and along the south-east border, follow satellite scene edges rather than water.
 
 **Clouds limit the optical data in the rainy season.** When floods peak, Sentinel-2 often has few
 clear views, so the radar carries most of the detection. `flood_observed_pct` shows how much of
@@ -290,13 +405,15 @@ happens.
 **No field verification in this version.** The original system was checked on the ground in three
 post-flood field assessments. This rebuild has not been validated in the field.
 
-**Seasonal wetlands count as flooded.** Compared with the dry-season reference, wetlands and
-floodplains that fill every rainy season are flagged every year, as they were in the original
-flood frequency maps. A county with large seasonal wetlands can be flagged most years; the flag
-compares with a fixed share of the county, not with that county's usual extent.
+**Seasonal wetlands count as flooded.** Open water that is not permanent (in at least 80% of
+Landsat observations since 1984) counts as flooded whenever it appears, so wetlands and floodplains
+that fill every rainy season are flagged every year, as they were in the original flood frequency
+maps. A county with large seasonal wetlands can be flagged most years; the flag compares with a
+fixed share of the county, not with that county's usual extent.
 
-**The thresholds are not calibrated.** The radar, optical and alert thresholds are reasonable
-starting values, documented in `config.yml`, not values fitted to this data.
+**The thresholds are not fitted to this data.** The radar threshold was chosen by comparison with
+JRC's Landsat water in six counties and three months; the optical and alert thresholds are
+documented starting values in `config.yml`.
 
 **Smaller points.** Floods narrower than about 100 m are missed (see
 [Scales and quotas](#scales-and-quotas)). The simplified boundaries change county areas by less
