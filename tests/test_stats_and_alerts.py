@@ -14,6 +14,7 @@ from ssd_monitor.stats import (
     climatology,
     national_monthly,
     peak_flood_month,
+    summarise_agreement,
     tidy_features,
     worst_vegetation_month,
 )
@@ -269,3 +270,30 @@ def test_worst_vegetation_month_breaks_ties_on_the_lowest_anomaly():
         {"month": ["2020-01", "2020-02"], "ndvi_anomaly": [-0.5, -0.9], "counties_flag_ndvi_low": [3, 3]}
     )
     assert worst_vegetation_month(national) == "2020-02"
+
+
+def _agreement_row(jrc, **layers):
+    row = {"jrc": jrc}
+    for name in ("flooded", "radar_dark", "radar_change", "optical"):
+        flag, both = layers.get(name, (0.0, 0.0))
+        row |= {f"{name}_flag": flag, f"{name}_both": both}
+    return row
+
+
+def test_agreement_is_pooled_by_area():
+    rows = [
+        _agreement_row(10.0, flooded=(8.0, 6.0), radar_dark=(4.0, 4.0), optical=(6.0, 3.0)),
+        _agreement_row(30.0, flooded=(12.0, 10.0), radar_change=(5.0, 1.0), optical=(12.0, 10.0)),
+    ]
+    out = summarise_agreement(rows).set_index("layer")
+    combined = out.loc["flood layer (radar or optical)"]
+    assert combined["recall"] == 0.4  # (6 + 10) / (10 + 30)
+    assert combined["precision"] == 0.8  # (6 + 10) / (8 + 12)
+    assert out.loc["radar, darkness rule (used)", "precision"] == 1.0
+    assert out.loc["radar, dry-season change rule (dropped)", "recall"] == 0.02  # 1 / 40, rounded
+    assert out.loc["optical, MNDWI", "flagged_km2"] == 18.0
+
+
+def test_agreement_without_flags_has_no_precision():
+    out = summarise_agreement([_agreement_row(5.0)])
+    assert out["precision"].isna().all() and (out["recall"] == 0).all()

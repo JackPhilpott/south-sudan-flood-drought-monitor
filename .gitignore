@@ -20,3 +20,5 @@ data/raw/
 .idea/
 Thumbs.db
 .DS_Store
+# Notes for other local sessions (not part of the repo)
+handoff/

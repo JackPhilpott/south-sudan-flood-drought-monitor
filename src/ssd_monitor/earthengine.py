@@ -28,8 +28,18 @@ def counties_to_ee(counties: gpd.GeoDataFrame) -> ee.FeatureCollection:
 
 
 def country_to_ee(counties: gpd.GeoDataFrame) -> ee.Geometry:
-    """The outline of all counties together, used to clip images and limit image searches."""
+    """The outline of all counties together, used to clip the exported images."""
     return planar_geometry(json.loads(shapely.to_geojson(counties.union_all())))
+
+
+def search_area_to_ee(counties: gpd.GeoDataFrame, margin_deg: float = 0.05) -> ee.Geometry:
+    """A simple outline slightly larger than the country, for finding the scenes that touch it.
+
+    Scene searches (filterBounds) with the detailed outline run out of memory in Earth Engine. A
+    buffered, simplified outline has a few dozen vertices and still catches every scene at the edges.
+    """
+    outline = counties.union_all().buffer(margin_deg).simplify(margin_deg)
+    return planar_geometry(json.loads(shapely.to_geojson(outline)))
 
 
 def empty_image(bands: list[str]) -> ee.Image:
@@ -43,9 +53,11 @@ def with_fallback(images: ee.ImageCollection, bands: list[str]) -> ee.ImageColle
     Reducing an empty collection gives an image with no bands, and the next band operation fails.
     With the masked image added, a month with no data gives masked pixels instead, which become a
     missing value for each county. Masked pixels are ignored by sum, mean, median and max, so the
-    added image changes nothing when there is data.
+    added image changes nothing when there is data. Every image is cast to float first, because
+    Earth Engine won't reduce a collection that mixes band types (MODIS NDVI is stored as integers).
     """
-    return images.merge(ee.ImageCollection([empty_image(bands)]))
+    as_float = images.map(lambda image: ee.Image(image).toFloat())
+    return as_float.merge(ee.ImageCollection([empty_image(bands)]))
 
 
 def county_stats(

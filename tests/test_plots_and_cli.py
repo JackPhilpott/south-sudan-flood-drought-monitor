@@ -120,3 +120,4 @@ def test_offline_modules_never_import_earth_engine():
 def test_earth_engine_modules_import():
     """They can't run without an account, but they must at least import cleanly."""
     import ssd_monitor.exports  # noqa: F401
+    import ssd_monitor.validation  # noqa: F401

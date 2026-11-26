@@ -3,13 +3,15 @@
     python scripts/monitor.py <command>
 
     boundaries  download COD-AB from HDX and rebuild data/ssd_admin2_simplified.geojson
+    cost-test   export one month of everything, then estimate the full run's EECU-hours (run again)
     submit      start the Earth Engine exports that are ready (run again until all are done)
-    status      show each export: done, running, ready, waiting or failed
+    status      show each export: done, running, ready, waiting or failed, with the EECU it used
     download    copy finished exports to outputs/raw/ and outputs/flood_frequency_*.tif
+    benchmark   compare the flood layers with JRC's Landsat monthly water on sample county-months
     build       outputs/county_monthly.csv and national_monthly.csv from outputs/raw/
     plots       the four figures in outputs/figures/
 
-submit, status and download need Earth Engine and the EE_PROJECT environment variable.
+cost-test, submit, status, download and benchmark need Earth Engine and the EE_PROJECT variable.
 boundaries, build and plots don't.
 """
 
@@ -46,15 +48,19 @@ def _earth_engine(cfg: Config) -> str:
     return asset_root(project, cfg.asset_folder)
 
 
-def cmd_submit(cfg: Config) -> None:
-    from ssd_monitor import exports
+def cmd_submit(cfg: Config, flood_years: str | None = None) -> None:
+    from ssd_monitor import exports, tasks
 
     root = _earth_engine(cfg)
-    plan = exports.submit(cfg, root, boundaries.load_counties(cfg.boundaries))
+    jobs = tasks.plan_jobs(cfg)
+    if flood_years:
+        first, last = (int(y) for y in flood_years.split("-"))
+        jobs = tasks.select_flood_years(jobs, first, last)
+    plan = exports.submit(cfg, root, boundaries.load_counties(cfg.boundaries), jobs)
     print(f"Started {len(plan.start)}: {', '.join(j.name for j in plan.start) or '-'}")
     print(f"Already running {len(plan.running)}, done {len(plan.done)}, waiting {len(plan.waiting)}")
     if plan.waiting:
-        print("Waiting jobs need s1_reference: run `submit` again once it has finished.")
+        print("Waiting flood tables start once their layers exist: run `submit` again then.")
 
 
 def cmd_status(cfg: Config) -> None:
@@ -68,13 +74,49 @@ def cmd_status(cfg: Config) -> None:
         ("ready", plan.start),
         ("waiting", plan.waiting),
     ]
+    total = 0.0
     for label, jobs in groups:
         for job in jobs:
             line = f"{label:8} {job.name}"
             op = ops.get(job.name)
+            eecu = exports.eecu_seconds(op) if op else None
+            if label == "done" and eecu is not None:
+                total += eecu
+                line += f"  {eecu / 3600:.2f} EECU-hours"
             if label == "ready" and op and op["metadata"].get("state") == "FAILED":
                 line += f"  (last attempt failed: {op.get('error', {}).get('message', 'no message')})"
             print(line)
+    print(f"EECU-hours used by the finished exports: {total / 3600:.2f}")
+
+
+def cmd_cost_test(cfg: Config, month: str) -> None:
+    from ssd_monitor import exports, tasks
+
+    root = _earth_engine(cfg)
+    jobs = tasks.cost_test_jobs(month)
+    plan = exports.submit(cfg, root, boundaries.load_counties(cfg.boundaries), jobs)
+    print(
+        f"Cost test for {month}: started {len(plan.start)}, running {len(plan.running)}, "
+        f"waiting {len(plan.waiting)}, done {len(plan.done)}"
+    )
+    if len(plan.done) < len(jobs):
+        print("Run `cost-test` again when the running exports have finished.")
+        return
+    _, ops = exports.current_plan(cfg, root, jobs)
+    measured = {job.kind: exports.eecu_seconds(ops[job.name]) for job in jobs if job.name in ops}
+    if len(measured) < len(jobs) or None in measured.values():
+        print("Earth Engine hasn't reported the EECU usage of every export yet; try again shortly.")
+        return
+    estimate = tasks.estimate_full_run(measured, cfg)
+    months = tasks.months_per_kind(cfg)
+    print(f"{'export':16} {'EECU-s, 1 month':>16} {'months':>7} {'full run, EECU-h':>17}")
+    for kind, seconds in measured.items():
+        print(f"{kind:16} {seconds:16.1f} {months[kind]:7d} {estimate[kind]:17.2f}")
+    print(f"{'total':16} {'':16} {'':7} {sum(estimate.values()):17.2f}")
+    print(
+        "Note: the EECU Earth Engine reports for table exports can be far below what its profiler "
+        "measures for the same work; check them with ee.profilePrinting() or the Cloud console."
+    )
 
 
 def cmd_download(cfg: Config) -> None:
@@ -85,6 +127,18 @@ def cmd_download(cfg: Config) -> None:
         print(f"{indicator:9} {path or 'not all exports have finished'}")
     tif = exports.download_frequency(cfg, root, boundaries.load_counties(cfg.boundaries), frequency_path(cfg))
     print(f"frequency {tif or 'not all exports have finished'}")
+
+
+def cmd_benchmark(cfg: Config) -> None:
+    from ssd_monitor import validation
+    from ssd_monitor.earthengine import counties_to_ee
+
+    _earth_engine(cfg)
+    rows = validation.benchmark(cfg.flood, counties_to_ee(boundaries.load_counties(cfg.boundaries)))
+    pd.DataFrame(rows).round(2).to_csv(cfg.outputs / "benchmark_jrc.csv", index=False)
+    summary = stats.summarise_agreement(rows)
+    summary.to_csv(cfg.outputs / "benchmark_jrc_summary.csv", index=False)
+    print(summary.to_string(index=False))
 
 
 def cmd_build(cfg: Config) -> None:
@@ -134,6 +188,7 @@ COMMANDS = {
     "submit": cmd_submit,
     "status": cmd_status,
     "download": cmd_download,
+    "benchmark": cmd_benchmark,
     "build": cmd_build,
     "plots": cmd_plots,
 }
@@ -143,11 +198,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("command", choices=COMMANDS)
+    parser.add_argument("command", choices=[*COMMANDS, "cost-test"])
     parser.add_argument("--config", default=None, help="path to config.yml (default: the one in the repo)")
+    parser.add_argument("--month", default="2020-09", help="month for cost-test (default: 2020-09)")
+    parser.add_argument("--flood-years", default=None, help="submit only these flood years, e.g. 2019-2022")
     args = parser.parse_args(argv)
     cfg = load_config(args.config) if args.config else load_config()
-    COMMANDS[args.command](cfg)
+    if args.command == "cost-test":
+        cmd_cost_test(cfg, args.month)
+    elif args.command == "submit":
+        cmd_submit(cfg, args.flood_years)
+    else:
+        COMMANDS[args.command](cfg)
 
 
 if __name__ == "__main__":

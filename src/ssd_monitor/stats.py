@@ -20,6 +20,15 @@ RAW_COLUMNS = {
     "ndvi": ["ndvi"],
     "flood": ["flooded_km2", "flooded_sar_km2", "flooded_optical_km2", "observed_km2"],
 }
+# Precision kept in the raw downloads: well beyond what the data supports, and small files.
+RAW_ROUNDING = {
+    "rain_mm": 2,
+    "ndvi": 4,
+    "flooded_km2": 3,
+    "flooded_sar_km2": 3,
+    "flooded_optical_km2": 3,
+    "observed_km2": 3,
+}
 COUNTY_COLUMNS = ["county_code", "county_name", "state_code", "state_name", "area_km2"]
 COUNTY_MONTHLY_COLUMNS = [
     *COUNTY_COLUMNS[:4],
@@ -250,3 +259,36 @@ def worst_vegetation_month(national: pd.DataFrame) -> str | None:
         ["counties_flag_ndvi_low", "ndvi_anomaly"], ascending=[False, True]
     )
     return None if ranked.empty else str(ranked["month"].iloc[0])
+
+
+# --- Agreement with JRC monthly water ----------------------------------------------------
+
+AGREEMENT_LAYERS = {
+    "flooded": "flood layer (radar or optical)",
+    "radar_dark": "radar, darkness rule (used)",
+    "radar_change": "radar, dry-season change rule (dropped)",
+    "optical": "optical, MNDWI",
+}
+
+
+def summarise_agreement(rows: list[dict]) -> pd.DataFrame:
+    """Recall and precision of each flood layer against JRC water, pooled over all rows by area.
+
+    recall: share of JRC's water that the layer also flags.
+    precision: share of the layer's flagged area that JRC also calls water.
+    """
+    df = pd.DataFrame(rows)
+    jrc = df["jrc"].sum()
+    out = []
+    for layer, label in AGREEMENT_LAYERS.items():
+        flagged, both = df[f"{layer}_flag"].sum(), df[f"{layer}_both"].sum()
+        out.append(
+            {
+                "layer": label,
+                "flagged_km2": flagged,
+                "jrc_water_km2": jrc,
+                "recall": both / jrc if jrc else np.nan,
+                "precision": both / flagged if flagged else np.nan,
+            }
+        )
+    return pd.DataFrame(out).round({"flagged_km2": 1, "jrc_water_km2": 1, "recall": 2, "precision": 2})

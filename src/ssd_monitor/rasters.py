@@ -65,6 +65,22 @@ def grid_for_bounds(bounds, cell: float) -> Grid:
     )
 
 
+def split_grid(grid: Grid, tile_cells: int) -> list[tuple[int, int, Grid]]:
+    """Tiles of at most tile_cells x tile_cells covering the grid, as (first row, first column, tile)."""
+    tiles = []
+    for row in range(0, grid.height, tile_cells):
+        for col in range(0, grid.width, tile_cells):
+            tile = Grid(
+                west=round(grid.west + col * grid.cell, 9),
+                north=round(grid.north - row * grid.cell, 9),
+                cell=grid.cell,
+                width=min(tile_cells, grid.width - col),
+                height=min(tile_cells, grid.height - row),
+            )
+            tiles.append((row, col, tile))
+    return tiles
+
+
 def write_frequency(path: Path, months_x10: np.ndarray, excluded_pct: np.ndarray, grid: Grid) -> None:
     """Write the two bands as a compressed GeoTIFF. Values below 0 are treated as outside the country."""
     if months_x10.shape != (grid.height, grid.width) or excluded_pct.shape != months_x10.shape:

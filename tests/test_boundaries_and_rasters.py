@@ -7,7 +7,7 @@ from pyproj import Geod
 from shapely.geometry import Polygon, box
 
 from ssd_monitor.boundaries import load_counties, make_counties, save_counties
-from ssd_monitor.rasters import Grid, grid_for_bounds, read_frequency, write_frequency
+from ssd_monitor.rasters import Grid, grid_for_bounds, read_frequency, split_grid, write_frequency
 
 
 def admin2(geometries, codes):
@@ -94,3 +94,14 @@ def test_frequency_rejects_the_wrong_shape(tmp_path):
     grid = Grid(west=30.0, north=8.0, cell=0.5, width=3, height=2)
     with pytest.raises(ValueError, match="2 x 3"):
         write_frequency(tmp_path / "f.tif", np.zeros((3, 2)), np.zeros((3, 2)), grid)
+
+
+def test_split_grid_covers_the_grid_exactly():
+    grid = Grid(west=30.0, north=8.0, cell=0.5, width=5, height=3)
+    tiles = split_grid(grid, 2)
+    assert len(tiles) == 6  # 3 columns of tiles x 2 rows
+    covered = np.zeros((grid.height, grid.width), dtype=int)
+    for row, col, tile in tiles:
+        covered[row : row + tile.height, col : col + tile.width] += 1
+        assert tile.west == 30.0 + col * 0.5 and tile.north == 8.0 - row * 0.5
+    assert (covered == 1).all()

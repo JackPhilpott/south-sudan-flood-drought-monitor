@@ -33,9 +33,6 @@ class VegetationConfig:
 class SarConfig:
     collection: str
     orbit_passes: tuple[str, ...]
-    reference_years: tuple[int, ...]
-    reference_months: tuple[int, ...]
-    drop_db: float
     vv_water_max_db: float
 
 
@@ -148,8 +145,6 @@ def validate(cfg: Config) -> None:
     bad_passes = set(cfg.flood.sar.orbit_passes) - {"ASCENDING", "DESCENDING"}
     if bad_passes:
         raise ValueError(f"flood.sar.orbit_passes: unknown pass {sorted(bad_passes)}")
-    if not all(1 <= m <= 12 for m in cfg.flood.sar.reference_months):
-        raise ValueError("flood.sar.reference_months must be month numbers 1-12")
 
 
 def ee_project() -> str:

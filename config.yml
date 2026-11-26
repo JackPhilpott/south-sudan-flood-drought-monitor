@@ -33,11 +33,8 @@ flood:
   scale_m: 100                # processing scale for both sensors (see README: why 100 m)
   sar:
     collection: COPERNICUS/S1_GRD
-    orbit_passes: [ASCENDING, DESCENDING]  # each pass is compared with its own reference
-    reference_years: [2017, 2018, 2019]    # dry-season reference: median of these months...
-    reference_months: [1, 2, 3]            # ...in these years, before the 2019 floods
-    drop_db: 3.0              # flagged when VV or VH is this much darker than the reference...
-    vv_water_max_db: -15.0    # ...and VV is darker than this (open water is dark in VV)
+    orbit_passes: [ASCENDING, DESCENDING]  # each direction's monthly median is tested separately
+    vv_water_max_db: -18.0    # water where the month's median VV is at or below this (calm water is dark)
   optical:
     collection: COPERNICUS/S2_SR_HARMONIZED
     cloud_score_collection: GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED

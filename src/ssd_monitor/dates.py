@@ -26,8 +26,3 @@ def year_chunks(first_year: int, last_year: int, size: int) -> list[tuple[int, i
     if size < 1:
         raise ValueError("size must be at least 1")
     return [(y, min(y + size - 1, last_year)) for y in range(first_year, last_year + 1, size)]
-
-
-def reference_windows(years, months) -> list[tuple[str, str]]:
-    """One window per (year, month): the dry-season months the radar reference is built from."""
-    return [month_window(f"{y}-{m:02d}") for y in sorted(years) for m in sorted(months)]

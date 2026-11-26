@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 
 from ssd_monitor.config import asset_root, ee_project, load_config, validate
-from ssd_monitor.dates import month_window, months_between, months_in_years, reference_windows, year_chunks
+from ssd_monitor.dates import month_window, months_between, months_in_years, year_chunks
 
 # --- config ------------------------------------------------------------------------------
 
@@ -39,11 +39,6 @@ def test_validate_rejects_a_reversed_period(cfg):
 def test_validate_rejects_an_unknown_orbit_pass(cfg):
     with pytest.raises(ValueError, match="unknown pass"):
         validate(_with_sar(cfg, orbit_passes=("SIDEWAYS",)))
-
-
-def test_validate_rejects_a_bad_reference_month(cfg):
-    with pytest.raises(ValueError, match="1-12"):
-        validate(_with_sar(cfg, reference_months=(0,)))
 
 
 def test_ee_project_comes_from_the_environment(monkeypatch):
@@ -99,10 +94,3 @@ def test_year_chunks():
     assert year_chunks(2019, 2025, 3) == [(2019, 2021), (2022, 2024), (2025, 2025)]
     with pytest.raises(ValueError):
         year_chunks(2019, 2025, 0)
-
-
-def test_reference_windows_one_per_year_and_month():
-    windows = reference_windows([2018, 2017], [3, 1, 2])
-    assert len(windows) == 6
-    assert windows[0] == ("2017-01-01", "2017-02-01")
-    assert windows[-1] == ("2018-03-01", "2018-04-01")
