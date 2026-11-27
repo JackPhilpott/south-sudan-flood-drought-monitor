@@ -95,6 +95,12 @@ class RadarFixTestConfig:
 
 
 @dataclass(frozen=True)
+class FiguresConfig:
+    ndvi_month: str
+    ndvi_highlight_state: str
+
+
+@dataclass(frozen=True)
 class FloodCheckConfig:
     low_lying_max_hand_m: float
     low_lying_share_pct: float
@@ -125,6 +131,7 @@ class Config:
     radar_fix_test: RadarFixTestConfig
     alerts: AlertThresholds
     flood_check: FloodCheckConfig
+    figures: FiguresConfig
 
     @property
     def start_year(self) -> int:
@@ -168,6 +175,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         radar_fix_test=RadarFixTestConfig(**_tuples(raw["radar_fix_test"])),
         alerts=AlertThresholds(**raw["alerts"]),
         flood_check=FloodCheckConfig(**raw["flood_check"]),
+        figures=FiguresConfig(**{k: str(v) for k, v in raw["figures"].items()}),
     )
     validate(cfg)
     return cfg

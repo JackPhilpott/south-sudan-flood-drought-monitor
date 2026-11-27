@@ -193,9 +193,16 @@ def cmd_plots(cfg: Config) -> None:
     if flood_month:
         fig = plots.plot_county_flood(counties, county_monthly, flood_month, cfg.alerts.flood_new_percentile)
         plots.save(fig, out / "county_flood_peak.png")
-    drought_month = stats.worst_vegetation_month(national)
-    if drought_month:
-        fig = plots.plot_county_ndvi(counties, county_monthly, drought_month, cfg.alerts.ndvi_anomaly_below)
+    drought_month = cfg.figures.ndvi_month
+    if drought_month in set(county_monthly["month"]):
+        fig = plots.plot_county_ndvi(
+            counties,
+            county_monthly,
+            drought_month,
+            cfg.alerts.ndvi_anomaly_below,
+            highlight_state=cfg.figures.ndvi_highlight_state,
+            note=f"{cfg.figures.ndvi_highlight_state} outlined: the 2021-22 drought there.",
+        )
         plots.save(fig, out / "county_ndvi_drought.png")
     print(f"Figures written to {out} (peak new-water month {flood_month}, drought month {drought_month})")
 

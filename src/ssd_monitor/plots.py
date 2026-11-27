@@ -20,6 +20,7 @@ from ssd_monitor.rasters import FrequencyRaster
 INK, SECONDARY, MUTED = "#0b0b0b", "#52514e", "#898781"
 SURFACE, LAND, GRID, BASELINE = "#fcfcfb", "#f0efec", "#e1e0d9", "#c3c2b7"
 SERIES = "#2a78d6"
+HIGHLIGHT = "#d62a7e"  # one state picked out on a county map
 # One hue, light to dark, for magnitude (flood frequency and flooded share).
 BLUES = ["#cde2fb", "#86b6ef", "#3987e5", "#256abf", "#184f95", "#0d366b"]
 # Brown (drier than usual) to teal (greener than usual) with a neutral grey midpoint. Brown-teal
@@ -230,7 +231,8 @@ def plot_national(national: pd.DataFrame, rain_threshold_pct: float, min_normal_
         "and new",
         f"Blank rainfall months: dry months with a normal below {min_normal_mm:g} mm. Rainfall: CHIRPS. "
         "Open water: modified Copernicus Sentinel-1 and Sentinel-2 data. Persistent: also there in March "
-        "and April of the dry season before.",
+        "and April of the dry season before; it steps up each May, when the baseline moves to the dry "
+        "season just ended. January-April 2019 use 2019's own March and April.",
     )
     return fig
 
@@ -301,11 +303,33 @@ def plot_county_flood(
 
 
 def plot_county_ndvi(
-    counties: gpd.GeoDataFrame, county_monthly: pd.DataFrame, month: str, threshold_sd: float
+    counties: gpd.GeoDataFrame,
+    county_monthly: pd.DataFrame,
+    month: str,
+    threshold_sd: float,
+    highlight_state: str | None = None,
+    note: str = "",
 ) -> Figure:
-    """NDVI anomaly of each county in one month, with flagged counties outlined."""
+    """NDVI anomaly of each county in one month, flagged counties outlined, one state picked out."""
     values = county_monthly[county_monthly["month"] == month]
-    lowest3 = values.dropna(subset=["ndvi_anomaly"]).nsmallest(3, "ndvi_anomaly")["county_code"].tolist()
+    in_state = (
+        set(counties.loc[counties["state_name"] == highlight_state, "county_code"])
+        if highlight_state and "state_name" in counties
+        else set()
+    )
+    # With a state picked out, its outline is the focus: name its flagged counties in the note
+    # instead of labelling (its counties are small and the labels would overlap).
+    lowest3 = (
+        []
+        if in_state
+        else values.dropna(subset=["ndvi_anomaly"]).nsmallest(3, "ndvi_anomaly")["county_code"].tolist()
+    )
+    flagged_in_state = values[
+        values["county_code"].isin(in_state) & values["flag_ndvi_low"].fillna(False).astype(bool)
+    ]
+    names = counties.set_index("county_code")["county_name"]
+    flagged_names = ", ".join(sorted(names[c] for c in flagged_in_state["county_code"]))
+    state_note = f"Flagged in {highlight_state}: {flagged_names}. " if flagged_names else ""
     fig, ax, handles = _county_map(
         counties,
         values,
@@ -319,14 +343,20 @@ def plot_county_ndvi(
     handles.append(
         Patch(facecolor="none", edgecolor=INK, linewidth=0.9, label=f"Flagged: below {threshold_sd:g}")
     )
+    if highlight_state and "state_name" in counties and (counties["state_name"] == highlight_state).any():
+        state = counties[counties["state_name"] == highlight_state].dissolve()
+        state.boundary.plot(ax=ax, color=HIGHLIGHT, linewidth=2.2, aspect=None, zorder=5)
+        handles.append(Patch(facecolor="none", edgecolor=HIGHLIGHT, linewidth=2.2, label=highlight_state))
     _legend(ax, handles, "NDVI anomaly (SD)")
     _titles(
         fig,
         f"Vegetation anomaly by county, {month_label(month)}",
-        "NDVI against each county's own 2001-2020 trend for the same month, in standard deviations. "
-        "Labels: the three lowest counties.",
-        "The month with the most counties flagged for low NDVI. NDVI: MODIS MOD13Q1 (NASA LP DAAC); water, "
-        "built-up and bare land masked with ESA WorldCover 2021. " + BOUNDARY_NOTE,
+        "NDVI against each county's own 2001-2020 trend for the same month, in standard deviations"
+        + ("" if in_state else ". Labels: the three lowest counties."),
+        (note + " " if note else "")
+        + state_note
+        + "NDVI: MODIS MOD13Q1 (NASA LP DAAC); water, built-up and bare land masked with ESA WorldCover "
+        "2021. " + BOUNDARY_NOTE,
     )
     return fig
 

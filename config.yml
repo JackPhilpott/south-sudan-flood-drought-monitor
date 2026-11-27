@@ -83,6 +83,11 @@ alerts:
   flood_new_percentile: 80    # flood flag (R1): new water above the county's own 80th percentile for
   flood_new_min_km2: 10       # that calendar month over the whole period, and at least this many km2
 
+# The vegetation map: a month with a known drought, and the state to pick out.
+figures:
+  ndvi_month: "2022-03"       # the 2021-22 drought in Eastern Equatoria
+  ndvi_highlight_state: Eastern Equatoria
+
 # Flood flag rules compared with OCHA's flood-affected counties (flood_flags.py); R1 above is adopted.
 flood_check:
   low_lying_max_hand_m: 5     # R2: "low-lying" land is at most this high above the nearest drainage...

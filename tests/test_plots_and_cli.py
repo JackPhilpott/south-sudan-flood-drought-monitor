@@ -75,6 +75,17 @@ def test_county_ndvi_map(counties_gdf, tables, cfg):
     assert "Charlie" in [t.get_text() for t in fig.axes[0].texts]
 
 
+def test_county_ndvi_map_can_pick_out_a_state(counties_gdf, tables, cfg):
+    county_monthly, _ = tables
+    fig = plots.plot_county_ndvi(
+        counties_gdf, county_monthly, "2022-01", cfg.alerts.ndvi_anomaly_below, highlight_state="South"
+    )
+    assert "South" in legend_labels(fig)
+    assert not fig.axes[0].texts  # the state outline is the focus: no county labels
+    assert any("Flagged in South: Charlie" in t for t in texts(fig))
+    assert cfg.figures.ndvi_month == "2022-03"
+
+
 def test_save_writes_a_png(tmp_path, frequency, counties_gdf):
     path = tmp_path / "figures" / "map.png"
     plots.save(plots.plot_flood_frequency(frequency, counties_gdf, "2019-2025", 100), path)

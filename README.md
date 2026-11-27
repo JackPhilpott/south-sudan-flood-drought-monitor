@@ -5,26 +5,49 @@
 Monthly flood, rainfall and vegetation indicators for each of South Sudan's 79 counties, 2019-2025,
 from open satellite data, using the Google Earth Engine Python API and numpy.
 
-From 2019 to 2022 I designed and ran a flood and drought monitoring system for IMPACT Initiatives
-(REACH) in South Sudan. It ran every month for over two years in Google Earth Engine (Python):
-satellite flood extent from radar and optical imagery, CHIRPS rainfall and NDVI, reported by
-county. It produced monthly data, quarterly factsheets and a dashboard used by OCHA, the clusters
-and partners, and we checked it on the ground in three post-flood field assessments. Its outputs
-also fed two separate REACH workflows, the Shocks Monitoring Index (SMI) and Integrated Needs
-Tracking (INT). Two published maps from that work show the kind of output it produced:
-[flood frequency 2019-2021](https://repository.impact-initiatives.org/document/reach/c24a7620/REACH_SSD_Map_SMI_FloodFrequency2019_20_21_31JAN2022_A4-2.pdf)
-and [drought in Eastern Equatoria, January 2022](https://repository.impact-initiatives.org/document/reach/7deca445/REACH_SSD_Map_SMI_Eastern_Equatoria_Drought_JAN2022_A4.pdf).
+From late 2019 to 2022 I designed and ran a flood and drought monitoring system for IMPACT
+Initiatives (REACH) in South Sudan. It ran every month for over two years in Google Earth Engine
+(Python): flood extent from a supervised classification of Sentinel-1 radar and Sentinel-2 and
+Landsat optical imagery, CHIRPS rainfall and NDVI, reported by county. It produced monthly data,
+quarterly factsheets and a dashboard used by OCHA, the clusters and partners, and we checked it on
+the ground in three post-flood field assessments. Its outputs also fed two separate REACH
+workflows, the Shocks Monitoring Index (SMI) and Integrated Needs Tracking (INT). A published map
+from that work shows the kind of output it produced:
+[drought in Eastern Equatoria, January 2022](https://repository.impact-initiatives.org/document/reach/7deca445/REACH_SSD_Map_SMI_Eastern_Equatoria_Drought_JAN2022_A4.pdf).
+A related published REACH map, [flood frequency 2019-2021](https://repository.impact-initiatives.org/document/reach/c24a7620/REACH_SSD_Map_SMI_FloodFrequency2019_20_21_31JAN2022_A4-2.pdf),
+used VIIRS flood data analysed by UNOSAT rather than this system's output.
 
 This repo is an open-data rebuild of the monitoring part, written from scratch from my own
 knowledge of the method. **It contains no REACH data or code:** every input is open data that the
 scripts download (see [Data and licences](#data-and-licences)). The only REACH material is this
-description, the links to the two published maps, and a link to a related repo. It reports each indicator on its
-own, with one documented alert flag each. It does not combine them into an index like the SMI.
+description, the links to the two published maps, and a link to a related repo. The original
+classifier was trained on REACH's own training data, which are not open, so this rebuild maps open
+water with documented threshold rules instead (a radar darkness threshold and an optical water
+index, see [Open water, step by step](#open-water-step-by-step)). **All the results here, including
+the agreement with JRC water and the flood flag's check against OCHA, describe this rebuild, not the
+original system.** It reports each indicator on its own, with one documented alert flag each. It
+does not combine them into an index like the SMI.
 
 **Flood extent here means open water only.** Flooded grassland and swamp, which make up much of
 the flooding in Jonglei, Unity and the Sudd, turn brighter on radar rather than darker and are not
 detected. Flooded areas in this repo therefore sit well below the figures in humanitarian reports
 on the 2019-2022 floods. See [Limitations](#limitations).
+
+> **At a glance**
+>
+> - **What it is:** monthly rainfall, vegetation and open-water indicators for South Sudan's 79
+>   counties, 2019-2025, from open satellite data with Earth Engine and Python; an open-data rebuild
+>   of a system I ran at REACH.
+> - **Validation (of this rebuild):** agreement with JRC's Landsat water maps in every county and
+>   month of 2019-2021 is recall 0.565, precision 0.363. The flood flag caught 93 of 168
+>   OCHA-listed flood-affected county-years, against 70.4 expected by chance: better than chance,
+>   but modest.
+> - **Key results:** open water peaked at 7,051 km² in August 2025. Water that stays after floods
+>   has grown since 2019, from 296 km² a month in July-December 2019 to 3,185 km² in 2025, much of
+>   it in Unity. Rainfall flagged the 2021 drought in Eastern Equatoria (33 county-months below 75%
+>   of normal).
+> - **The main limit:** open water only. Flooding under vegetation isn't detected, so areas sit far
+>   below humanitarian estimates of flooded land, and the rain-fed 2019 floods hardly register.
 
 ## Figures and results
 
@@ -42,12 +65,14 @@ before (in both March and April). The lakes that stayed in Unity drop out.*
 ![National monthly rainfall (% of normal) and open water, 2019-2025](outputs/figures/national_monthly.png)
 
 *Top: national rainfall as % of the 1991-2020 normal. Bottom: open water outside permanent water,
-split into persistent water (also there in March and April before) and new water.*
+split into persistent water (also there in March and April before) and new water. Persistent water
+steps up each May, when the baseline moves to the dry season just ended; January-April 2019 use
+2019's own March and April, so they show more persistent water than the months after.*
 
 | | |
 | :- | :- |
-| ![New water in each county, September 2022](outputs/figures/county_flood_peak.png) | ![NDVI anomaly by county, January 2019](outputs/figures/county_ndvi_drought.png) |
-| *Share of each county under new water in September 2022, the month with the most new water. Outlined: counties flagged against their own record.* | *NDVI anomaly against each county's trend in January 2019, the month with the most counties flagged.* |
+| ![New water in each county, September 2022](outputs/figures/county_flood_peak.png) | ![NDVI anomaly by county, March 2022, Eastern Equatoria outlined](outputs/figures/county_ndvi_drought.png) |
+| *Share of each county under new water in September 2022, the month with the most new water. Outlined: counties flagged against their own record.* | *NDVI anomaly against each county's trend in March 2022, with Eastern Equatoria outlined: the drought there that the original system mapped in January 2022 ([published map](https://repository.impact-initiatives.org/document/reach/7deca445/REACH_SSD_Map_SMI_Eastern_Equatoria_Drought_JAN2022_A4.pdf)). Five of its eight counties are flagged; Western and Central Equatoria are below trend too.* |
 
 What the run (January 2019 to December 2025, 79 counties) shows:
 
@@ -58,8 +83,9 @@ What the run (January 2019 to December 2025, 79 counties) shows:
   (87-99% by state). 622 of the 4,340 county-months with a rainfall normal of at least 20 mm were
   flagged below 75% of normal, including 33 in Eastern Equatoria in 2021.
 - **Open water.** The largest monthly total was 7,051 km² in August 2025, and the most new water
-  4,176 km² in September 2022. Water that stays has grown every year: persistent water averaged
-  296 km² a month in July-December 2019 and 3,185 km² in July-December 2025. In Unity the
+  4,176 km² in September 2022. Water that stays has grown since 2019: persistent water averaged
+  296 km² a month in July-December 2019 and 3,185 km² in July-December 2025 (2024 was slightly
+  below 2023). In Unity the
   July-November average rose from 171-369 km² in 2019-2021 to 1,292-2,432 km² in 2022-2025, as
   floodwater around Rubkona, Guit and Mayendit stayed; of that, 442-1,578 km² a month was
   persistent and 584-854 km² new.
@@ -69,8 +95,10 @@ What the run (January 2019 to December 2025, 79 counties) shows:
   modest: it caught 93 of the 168 listed county-years, against 70.4 expected from a random flag
   firing as often (details below).
 - **Vegetation.** 798 county-months (12.0%) were flagged for low NDVI, most in January 2019 (48
-  counties), May 2024 (45) and May 2019 (43). These are dry-season months: see the note on the
-  January 2022 drought under [Vegetation](#vegetation).
+  counties), May 2024 (45) and May 2019 (43). These are dry-season months. January is the dormant
+  season and burnt land lowers NDVI then, so January 2019's 48 are not a drought signal on their
+  own. The 2021-22 drought in Eastern Equatoria shows best in March 2022 (5 of its 8 counties; see
+  [Vegetation](#vegetation)).
 
 **Why 2019 has the least new water of the seven years.** July-December 2019 averaged 1,197 km² of
 new water a month, against 1,533-3,156 km² in the other years, although 2019 brought major floods.
@@ -103,8 +131,9 @@ For every county and every month from January 2019 to December 2025:
 | Vegetation | MODIS MOD13Q1 NDVI, 250 m | monthly mean NDVI, the county's trend value for that month, anomaly from the trend | anomaly below -1 |
 | Open water | Sentinel-1 radar and Sentinel-2 optical, analysed at 100 m | open water km² and % of county, km² flagged by each sensor, persistent and new water, % of county observed | new water above the county's own 80th percentile for that month, and at least 10 km² |
 
-It also maps how many months each 100 m pixel had open water, and new water, over 2019-2025: the
-equivalent of the REACH flood frequency map.
+It also maps how many months each 100 m pixel had open water, and new water, over 2019-2025,
+comparable in form to the published 2019-2021 flood frequency map (which used VIIRS flood data
+analysed by UNOSAT).
 
 ### Pipeline
 
@@ -290,7 +319,8 @@ precision is the share of the layer's flagged area that JRC also calls water.
 | Dry season (December-May) | 0.552 | 0.366 |
 | Wet season (June-November) | 0.579 | 0.359 |
 
-These figures measure **agreement with JRC monthly water, not accuracy**. JRC has its own errors,
+These figures describe this rebuild, not the original system, and they measure **agreement with
+JRC monthly water, not accuracy**. JRC has its own errors,
 it only covers open water that Landsat saw (so flooding under vegetation is missing from both), and
 where Landsat saw no water, Sentinel-2's MNDWI often finds wet soil or mixed water at the edges. The
 per county-month areas are in `outputs/raw/jrc_agreement.csv`.
@@ -344,7 +374,8 @@ and 3.5 for the old rule). **Its skill is better than chance but modest**: 93 of
 county-years against 70.4 expected, with 75 misses and 55 false alarms; it does best in 2019. R2
 is rarely wrong but rarely fires, and the old rule hardly fires at all. OCHA lists people affected
 by any flooding, including rain and flash floods and flooding under vegetation, so an open-water
-flag can't match it closely. The table is `outputs/flood_flag_check.csv`.
+flag can't match it closely. Like the JRC figures, this describes this rebuild's flag, not the
+original system. The table is `outputs/flood_flag_check.csv`.
 
 ### Scales and cost
 
@@ -540,7 +571,7 @@ probably add detections, so years are not strictly comparable.
 
 **Seasonal wetlands count as water.** Open water that isn't permanent (in at least 80% of Landsat
 observations since 1984) counts whenever it appears, so floodplains that fill every rainy season
-are new water every year, as in the original flood frequency maps.
+are new water every year.
 
 **County averages hide local extremes.** A county can pass every threshold while one part of it is
 badly flooded or very dry. The frequency maps show where within a county water appears.
