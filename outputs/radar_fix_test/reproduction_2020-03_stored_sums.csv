@@ -1,0 +1,5 @@
+quantity,earth_engine_km2,local_km2,difference_pct,largest_county_difference_km2
+flooded_km2,1429.318,1853.974,29.71,57.572
+flooded_sar_km2,1251.978,1575.587,25.848,47.044
+flooded_optical_km2,288.503,476.507,65.165,54.504
+observed_km2,620551.945,627069.754,1.05,525.848
