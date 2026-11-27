@@ -112,9 +112,13 @@ def _binned(values: pd.Series, bins: list[float], colours: list[str]) -> pd.Seri
 
 
 def plot_flood_frequency(
-    raster: FrequencyRaster, counties: gpd.GeoDataFrame, period: str, analysis_scale_m: float
+    raster: FrequencyRaster,
+    counties: gpd.GeoDataFrame,
+    period: str,
+    analysis_scale_m: float,
+    new_only: bool = False,
 ) -> Figure:
-    """Mean number of flooded months per cell, with permanent water and steep slopes greyed out."""
+    """Mean months with open water (or new water) per cell; permanent water and steep slopes greyed out."""
     cell = raster.grid.cell
     fig = _figure(9, 6.4)
     ax = _map_axes(fig, counties)
@@ -137,14 +141,22 @@ def plot_flood_frequency(
         Patch(facecolor=LAND, edgecolor=BASELINE, label="under 0.5"),
         Patch(facecolor=BASELINE, label="Permanent water or\nsteep slope (not assessed)"),
     ]
-    _legend(ax, handles, "Months flooded")
+    _legend(ax, handles, "Months with new water" if new_only else "Months with open water")
+    if new_only:
+        title = f"New water, {period}"
+        subtitle = (
+            "Months each area had open water that was not there in March and April of the dry season before"
+        )
+    else:
+        title = f"Open water, {period}"
+        subtitle = "Months each area had open water outside permanent water, from Sentinel-1 and Sentinel-2"
     _titles(
         fig,
-        f"Flood frequency, {period}",
-        "Number of months each area was flooded, from Sentinel-1 radar and Sentinel-2 optical imagery",
+        title,
+        subtitle,
         f"Mean over each {cell:g}° (about {cell * 111_320:,.0f} m) cell of a {analysis_scale_m:g} m "
-        "analysis. Contains modified Copernicus Sentinel data. "
-        "Permanent water: EC JRC/Google Global Surface Water. Slope: HydroSHEDS. " + BOUNDARY_NOTE,
+        "analysis. Contains modified Copernicus Sentinel data. Permanent water: EC JRC/Google Global "
+        "Surface Water. Slope: HydroSHEDS. Radar fix: MODIS burned area, MERIT Hydro. " + BOUNDARY_NOTE,
     )
     return fig
 
@@ -175,8 +187,12 @@ def plot_national(national: pd.DataFrame, rain_threshold_pct: float, min_normal_
         )
     top.set_ylabel("Rainfall, % of 1991-2020 normal", color=SECONDARY, fontsize=9)
 
-    bottom.plot(dates, national["flooded_km2"], color=SERIES, linewidth=2, zorder=3)
-    bottom.set_ylabel("Flooded area, km²", color=SECONDARY, fontsize=9)
+    persistent = national["persistent_km2"].fillna(0)
+    total = persistent + national["new_km2"].fillna(0)
+    bottom.fill_between(dates, 0, persistent, color=BLUES[1], linewidth=0, zorder=2, label="persistent water")
+    bottom.fill_between(dates, persistent, total, color=SERIES, linewidth=0, zorder=3, label="new water")
+    bottom.legend(loc="upper left", frameon=False, fontsize=8.5)
+    bottom.set_ylabel("Open water, km²", color=SECONDARY, fontsize=9)
     bottom.set_ylim(bottom=0)
     bottom.yaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
     peak = national.loc[national["flooded_km2"].idxmax()] if national["flooded_km2"].notna().any() else None
@@ -210,10 +226,11 @@ def plot_national(national: pd.DataFrame, rain_threshold_pct: float, min_normal_
     _titles(
         fig,
         "Rainfall and flooding across South Sudan, by month",
-        "Rainfall as % of the 1991-2020 normal (all counties, area-weighted) and total flooded area",
+        "Rainfall as % of the 1991-2020 normal (all counties, area-weighted), and open water: persistent "
+        "and new",
         f"Blank rainfall months: dry months with a normal below {min_normal_mm:g} mm. Rainfall: CHIRPS. "
-        "Flooded area: modified Copernicus Sentinel-1 and Sentinel-2 data, "
-        "counties with observations that month.",
+        "Open water: modified Copernicus Sentinel-1 and Sentinel-2 data. Persistent: also there in March "
+        "and April of the dry season before.",
     )
     return fig
 
@@ -254,32 +271,31 @@ def _county_map(
 
 
 def plot_county_flood(
-    counties: gpd.GeoDataFrame, county_monthly: pd.DataFrame, month: str, threshold_pct: float
+    counties: gpd.GeoDataFrame, county_monthly: pd.DataFrame, month: str, percentile: float
 ) -> Figure:
-    """Share of each county flooded in one month, with flagged counties outlined."""
+    """Share of each county under new water in one month, with flagged counties outlined."""
     values = county_monthly[county_monthly["month"] == month]
-    top3 = values.dropna(subset=["flooded_pct"]).nlargest(3, "flooded_pct")["county_code"].tolist()
+    top3 = values.dropna(subset=["new_pct"]).nlargest(3, "new_pct")["county_code"].tolist()
     fig, ax, handles = _county_map(
         counties,
         values,
-        "flooded_pct",
+        "new_pct",
         FLOODED_PCT_BINS,
         BLUES,
         FLOODED_PCT_LABELS,
         values["flag_flood"],
         top3,
     )
-    handles.append(
-        Patch(facecolor="none", edgecolor=INK, linewidth=0.9, label=f"Flagged: over {threshold_pct:g}%")
-    )
-    _legend(ax, handles, "Share of county flooded")
+    label = f"Flagged: above the county's\nown {percentile:g}th percentile"
+    handles.append(Patch(facecolor="none", edgecolor=INK, linewidth=0.9, label=label))
+    _legend(ax, handles, "Share of county under new water")
     _titles(
         fig,
-        f"Flooded share of each county, {month_label(month)}",
-        "The month with the largest flooded area in the series. Labels: the three most flooded counties.",
-        "Flood extent from modified Copernicus Sentinel-1 and Sentinel-2 data; permanent water "
-        "(EC JRC/Google) and steep slopes excluded. No data: no usable radar or optical observation "
-        "that month. " + BOUNDARY_NOTE,
+        f"New water in each county, {month_label(month)}",
+        "The month with the most new water in the series. Labels: the three counties with the largest share.",
+        "New water: open water not there in March and April of the dry season before. Modified Copernicus "
+        "Sentinel-1 and Sentinel-2 data; permanent water (EC JRC/Google) and steep slopes excluded. "
+        "No data: no usable observation that month. " + BOUNDARY_NOTE,
     )
     return fig
 
@@ -307,7 +323,7 @@ def plot_county_ndvi(
     _titles(
         fig,
         f"Vegetation anomaly by county, {month_label(month)}",
-        "NDVI against the 2001-2020 mean for the same month, in standard deviations. "
+        "NDVI against each county's own 2001-2020 trend for the same month, in standard deviations. "
         "Labels: the three lowest counties.",
         "The month with the most counties flagged for low NDVI. NDVI: MODIS MOD13Q1 (NASA LP DAAC); water, "
         "built-up and bare land masked with ESA WorldCover 2021. " + BOUNDARY_NOTE,

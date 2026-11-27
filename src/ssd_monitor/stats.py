@@ -18,7 +18,14 @@ KEYS = ["county_code", "month"]
 RAW_COLUMNS = {
     "rainfall": ["rain_mm"],
     "ndvi": ["ndvi"],
-    "flood": ["flooded_km2", "flooded_sar_km2", "flooded_optical_km2", "observed_km2"],
+    "flood": [
+        "flooded_km2",
+        "flooded_sar_km2",
+        "flooded_optical_km2",
+        "observed_km2",
+        "persistent_km2",
+        "new_km2",
+    ],
 }
 # Precision kept in the raw downloads: well beyond what the data supports, and small files.
 RAW_ROUNDING = {
@@ -27,6 +34,8 @@ RAW_ROUNDING = {
     "flooded_km2": 3,
     "flooded_sar_km2": 3,
     "flooded_optical_km2": 3,
+    "persistent_km2": 3,
+    "new_km2": 3,
     "observed_km2": 3,
 }
 COUNTY_COLUMNS = ["county_code", "county_name", "state_code", "state_name", "area_km2"]
@@ -38,13 +47,16 @@ COUNTY_MONTHLY_COLUMNS = [
     "rain_normal_mm",
     "rain_pct_normal",
     "ndvi",
-    "ndvi_baseline_mean",
-    "ndvi_baseline_sd",
+    "ndvi_expected",
+    "ndvi_residual_sd",
     "ndvi_anomaly",
     "flooded_km2",
     "flooded_pct",
     "flooded_sar_km2",
     "flooded_optical_km2",
+    "persistent_km2",
+    "new_km2",
+    "new_pct",
     "flood_observed_pct",
     "flag_rain_low",
     "flag_ndvi_low",
@@ -55,13 +67,16 @@ ROUNDING = {
     "rain_normal_mm": 1,
     "rain_pct_normal": 1,
     "ndvi": 4,
-    "ndvi_baseline_mean": 4,
-    "ndvi_baseline_sd": 4,
+    "ndvi_expected": 4,
+    "ndvi_residual_sd": 4,
     "ndvi_anomaly": 2,
     "flooded_km2": 2,
     "flooded_pct": 2,
     "flooded_sar_km2": 2,
     "flooded_optical_km2": 2,
+    "persistent_km2": 2,
+    "new_km2": 2,
+    "new_pct": 2,
     "flood_observed_pct": 1,
 }
 # A normal or baseline needs data in at least this share of its years, or it is left blank.
@@ -140,18 +155,41 @@ def add_percent_of_normal(rain: pd.DataFrame, years: tuple[int, int], min_normal
     return out
 
 
-def add_standardised_anomaly(ndvi: pd.DataFrame, years: tuple[int, int]) -> pd.DataFrame:
-    """Add the baseline mean and standard deviation for the calendar month, and the anomaly in SDs."""
-    out = _with_climatology(ndvi, "ndvi", years).rename(
-        columns={"mean": "ndvi_baseline_mean", "std": "ndvi_baseline_sd"}
-    )
-    sd = out["ndvi_baseline_sd"].where(out["ndvi_baseline_sd"] > 0)
-    out["ndvi_anomaly"] = (out["ndvi"] - out["ndvi_baseline_mean"]) / sd
-    return out
+def add_detrended_anomaly(ndvi: pd.DataFrame, years: tuple[int, int]) -> pd.DataFrame:
+    """Add each county's expected NDVI from its own trend, and the anomaly from that trend in SDs.
+
+    For every county and calendar month, a straight line is fitted to NDVI against year over `years`
+    (the baseline), then extended to every year. ndvi_expected is the line's value for the month,
+    ndvi_residual_sd the standard deviation of the baseline years around the line (n - 2 degrees of
+    freedom), and ndvi_anomaly = (ndvi - ndvi_expected) / ndvi_residual_sd.
+
+    A fixed 2001-2020 mean flagged far fewer recent months than early ones, because vegetation has
+    been getting greener in 78 of the 79 counties; measuring from each county's own trend removes
+    that drift. Only the baseline years shape the line, so later months don't change it. Left blank
+    where fewer than MIN_BASELINE_SHARE of the baseline years have a value.
+    """
+    keyed = ndvi.assign(year=ndvi["month"].str[:4].astype(int), calendar_month=ndvi["month"].str[5:7])
+    base = keyed[keyed["year"].between(*years)].dropna(subset=["ndvi"])
+    needed = MIN_BASELINE_SHARE * (years[1] - years[0] + 1)
+
+    def fit(group: pd.DataFrame) -> pd.Series:
+        if len(group) < max(needed, 3):
+            return pd.Series({"slope": np.nan, "intercept": np.nan, "ndvi_residual_sd": np.nan})
+        slope, intercept = np.polyfit(group["year"], group["ndvi"], 1)
+        residuals = group["ndvi"] - (intercept + slope * group["year"])
+        sd = float(np.sqrt((residuals**2).sum() / (len(group) - 2)))
+        return pd.Series({"slope": slope, "intercept": intercept, "ndvi_residual_sd": sd})
+
+    trends = base.groupby(["county_code", "calendar_month"])[["year", "ndvi"]].apply(fit)
+    out = keyed.join(trends, on=["county_code", "calendar_month"])
+    out["ndvi_expected"] = out["intercept"] + out["slope"] * out["year"]
+    sd = out["ndvi_residual_sd"].where(out["ndvi_residual_sd"] > 0)
+    out["ndvi_anomaly"] = (out["ndvi"] - out["ndvi_expected"]) / sd
+    return out.drop(columns=["year", "calendar_month", "slope", "intercept"])
 
 
 def add_flood_shares(flood: pd.DataFrame, areas: pd.DataFrame) -> pd.DataFrame:
-    """Add flooded_pct and flood_observed_pct, as % of each county's area.
+    """Add flooded_pct, new_pct and flood_observed_pct, as % of each county's area.
 
     When neither sensor saw any of the county that month, the flooded areas are unknown, not zero,
     so they are blanked.
@@ -160,9 +198,10 @@ def add_flood_shares(flood: pd.DataFrame, areas: pd.DataFrame) -> pd.DataFrame:
         areas[["county_code", "area_km2"]], on="county_code", how="left", validate="many_to_one"
     )
     seen = out["observed_km2"] > 0
-    for col in ("flooded_km2", "flooded_sar_km2", "flooded_optical_km2"):
+    for col in ("flooded_km2", "flooded_sar_km2", "flooded_optical_km2", "persistent_km2", "new_km2"):
         out[col] = out[col].where(seen)
     out["flooded_pct"] = 100 * out["flooded_km2"] / out["area_km2"]
+    out["new_pct"] = 100 * out["new_km2"] / out["area_km2"]
     out["flood_observed_pct"] = 100 * out["observed_km2"] / out["area_km2"]
     return out.drop(columns="area_km2")
 
@@ -190,7 +229,7 @@ def build_county_monthly(
     table = counties[COUNTY_COLUMNS].merge(months, how="cross")
 
     rain = add_percent_of_normal(rain, cfg.rainfall.normal_years, cfg.rainfall.min_normal_mm)
-    ndvi = add_standardised_anomaly(ndvi, cfg.vegetation.baseline_years)
+    ndvi = add_detrended_anomaly(ndvi, cfg.vegetation.baseline_years)
     flood = add_flood_shares(flood, counties).drop(columns="observed_km2")
     for indicator in (rain, ndvi, flood):
         table = table.merge(indicator, on=KEYS, how="left", validate="one_to_one")
@@ -221,6 +260,7 @@ def national_monthly(county_monthly: pd.DataFrame, min_normal_mm: float) -> pd.D
         both = m.dropna(subset=["rain_mm", "rain_normal_mm"])
         rain, normal = _area_mean(both, "rain_mm"), _area_mean(both, "rain_normal_mm")
         flooded = m["flooded_km2"].sum(min_count=1)
+        new = m["new_km2"].sum(min_count=1)
         rows.append(
             {
                 "month": month,
@@ -230,6 +270,8 @@ def national_monthly(county_monthly: pd.DataFrame, min_normal_mm: float) -> pd.D
                 "ndvi_anomaly": _area_mean(m, "ndvi_anomaly"),
                 "flooded_km2": flooded,
                 "flooded_pct": 100 * flooded / national_area,
+                "persistent_km2": m["persistent_km2"].sum(min_count=1),
+                "new_km2": new,
                 "counties_flag_rain_low": int(m["flag_rain_low"].fillna(False).sum()),
                 "counties_flag_ndvi_low": int(m["flag_ndvi_low"].fillna(False).sum()),
                 "counties_flag_flood": int(m["flag_flood"].fillna(False).sum()),
@@ -243,13 +285,15 @@ def national_monthly(county_monthly: pd.DataFrame, min_normal_mm: float) -> pd.D
             "ndvi_anomaly": 2,
             "flooded_km2": 1,
             "flooded_pct": 2,
+            "persistent_km2": 1,
+            "new_km2": 1,
         }
     )
 
 
-def peak_flood_month(national: pd.DataFrame) -> str | None:
-    """The month with the largest flooded area, or None if there is no flood data."""
-    flooded = national.set_index("month")["flooded_km2"].dropna()
+def peak_flood_month(national: pd.DataFrame, column: str = "new_km2") -> str | None:
+    """The month with the most new water (or another column), or None if there is no flood data."""
+    flooded = national.set_index("month")[column].dropna()
     return None if flooded.empty else str(flooded.idxmax())
 
 

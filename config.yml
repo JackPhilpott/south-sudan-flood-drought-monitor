@@ -9,9 +9,12 @@ period:
 paths:
   boundaries: data/ssd_admin2_simplified.geojson
   outputs: outputs
+  cache: cache                # downloaded Earth Engine layers (git-ignored, about 1-2 GB)
 
 earth_engine:
   asset_folder: ssd_monitor   # results are exported to projects/$EE_PROJECT/assets/ssd_monitor/
+  download_tile_px: 1200      # pixels per side of each download request (Earth Engine caps a request at 48 MB)
+  download_workers: 12        # parallel download requests
 
 rainfall:
   collection: UCSB-CHG/CHIRPS/PENTAD
@@ -22,7 +25,7 @@ rainfall:
 
 vegetation:
   collection: MODIS/061/MOD13Q1
-  baseline_years: [2001, 2020]
+  baseline_years: [2001, 2020]  # each county's NDVI trend is fitted over these years, then extended
   max_summary_qa: 1           # keep good (0) and marginal (1) pixels; drop snow (2) and cloud (3)
   worldcover_collection: ESA/WorldCover/v200
   exclude_worldcover: [50, 60, 70, 80]  # built-up, bare or sparse vegetation, snow and ice, permanent water
@@ -48,10 +51,40 @@ flood:
     dem: WWF/HydroSHEDS/03VFDEM
     max_slope_deg: 5          # steeper pixels are excluded (radar shadow, no standing water)
   min_connected_pixels: 8     # drop isolated flagged patches smaller than this
+  # The fix for false radar water, chosen in the method update (see radar_fix_test below): radar-only
+  # water is removed where land burned since 1 November (November-May only), where it is more than 5 m
+  # above the nearest drainage (MERIT Hydro HAND), and within 300 m of a Sentinel-1 scene outline.
+  radar_fix: [burn_season, hand_over_5, scene_edge]
+  persistent_months: [3, 4]   # water in both of these months of the preceding dry season is "persistent"
   years_per_task: 1
   frequency_cell_deg: 0.005   # cell size of the downloaded flood-frequency GeoTIFF (~550 m)
 
+# Candidate fixes for false radar water in the dry season, tested against JRC monthly water before
+# one is chosen (see radar_fixes.py). Each fix only removes radar-only pixels from the stored layers.
+radar_fix_test:
+  years: [2019, 2021]         # JRC monthly water ends in December 2021
+  burn_collection: MODIS/061/MCD64A1
+  burn_recent_months: 2       # (a1) burned this month or in the 2 months before
+  burn_season_start_month: 11 # (a2, used) burned since 1 November, applied in November to...
+  burn_season_end_month: 5    # ...May only: no burn mask from June to October
+  hand_image: MERIT/Hydro/v1_0_1
+  hand_thresholds_m: [5, 10, 15]  # (b) height above nearest drainage
+  dark_reference_asset: s1_reference  # (c) Jan-Mar 2017-2019 median VV per orbit direction
+  scene_edge_m: 300           # (e) radar-only water this close to a Sentinel-1 scene outline
+  jrc_monthly: JRC/GSW1_4/MonthlyHistory
+  jrc_yearly: JRC/GSW1_4/YearlyHistory
+  jrc_near_m: 150             # "next to JRC water": JRC water within this distance
+  wet_season_months: [6, 7, 8, 9, 10, 11]  # the rest (December to May) is the dry season
+  optical_clear_scale_m: 200  # optical veto: Sentinel-2 clear views judged on 200 m cells (cost: see README)
+
 alerts:
   rain_pct_normal_below: 75   # rainfall flag: below 75% of the 1991-2020 normal
-  ndvi_anomaly_below: -1.0    # vegetation flag: more than 1 standard deviation below the 2001-2020 mean
-  flooded_pct_above: 10       # flood flag: more than 10% of the county's area flooded
+  ndvi_anomaly_below: -1.0    # vegetation flag: more than 1 standard deviation below the county's trend
+  flood_new_percentile: 80    # flood flag (R1): new water above the county's own 80th percentile for
+  flood_new_min_km2: 10       # that calendar month over the whole period, and at least this many km2
+
+# Flood flag rules compared with OCHA's flood-affected counties (flood_flags.py); R1 above is adopted.
+flood_check:
+  low_lying_max_hand_m: 5     # R2: "low-lying" land is at most this high above the nearest drainage...
+  low_lying_share_pct: 5      # ...and the flag fires when new water covers more than this share of it
+  old_flooded_pct_above: 10   # the first run's rule: all open water above 10% of the county

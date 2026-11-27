@@ -99,6 +99,8 @@ def make_raw(counties: pd.DataFrame, cfg) -> dict[str, pd.DataFrame]:
                     "flooded_sar_km2": 0.8 * flooded,
                     "flooded_optical_km2": 0.5 * flooded,
                     "observed_km2": observed,
+                    "persistent_km2": 0.25 * flooded,
+                    "new_km2": 0.75 * flooded,
                 }
             )
 

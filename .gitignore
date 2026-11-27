@@ -22,3 +22,5 @@ Thumbs.db
 .DS_Store
 # Notes for other local sessions (not part of the repo)
 handoff/
+# Local cache of downloaded Earth Engine layers (large; rebuilt by scripts/monitor.py download-layers)
+cache/

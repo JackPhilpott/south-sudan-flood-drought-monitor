@@ -12,7 +12,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-from ssd_monitor import flood, rainfall, rasters, vegetation
+from ssd_monitor import flood, layer_cache, rainfall, rasters, vegetation
 from ssd_monitor.config import Config
 from ssd_monitor.earthengine import counties_to_ee, country_to_ee, search_area_to_ee
 from ssd_monitor.stats import RAW_COLUMNS, RAW_ROUNDING, tidy_features
@@ -166,6 +166,47 @@ def download_tables(cfg: Config, root: str, raw_dir: Path) -> dict[str, Path | N
     return written
 
 
+def _radar_fix_table(cfg: Config, root: str, counties_gdf: gpd.GeoDataFrame, months: list[str]):
+    from ssd_monitor import radar_fixes
+
+    years = {m[:4] for m in months}
+    if len(years) != 1:
+        raise ValueError("one pixel-class table covers months of a single year")
+    layers = ee.Image(f"{root}/flood_layers_{years.pop()}")
+    return radar_fixes.class_table(
+        cfg, root, layers, months, counties_to_ee(counties_gdf), search_area_to_ee(counties_gdf)
+    )
+
+
+def profile_radar_fix_month(
+    cfg: Config, root: str, counties_gdf: gpd.GeoDataFrame, month: str
+) -> tuple[list, float]:
+    """One month of the pixel-class table, computed in Earth Engine under the profiler: (features, EECU-s).
+
+    This measured the cost of scoring the fixes in Earth Engine (about 1,080 EECU-seconds a month,
+    which is why the test runs locally) and made the reference table that reproduce-check compares
+    the local route with (outputs/radar_fix_test/ee_pixel_classes_2020_03.csv).
+    """
+    import io
+
+    buffer = io.StringIO()
+    with ee.profilePrinting(destination=buffer):
+        features = _radar_fix_table(cfg, root, counties_gdf, [month]).getInfo()["features"]
+    return features, profile_eecu_seconds(buffer.getvalue())
+
+
+def profile_eecu_seconds(profile_text: str) -> float:
+    """Total EECU-seconds in the text ee.profilePrinting writes (first column of each row)."""
+    import re
+
+    total = 0.0
+    for line in profile_text.splitlines():
+        match = re.match(r"\s*([0-9.]+)\s+\S+\s+\d+\s", line)
+        if match:
+            total += float(match.group(1))
+    return total
+
+
 def download_frequency(cfg: Config, root: str, counties_gdf: gpd.GeoDataFrame, path: Path) -> Path | None:
     """Sum months_flooded over the yearly layers assets and download it as one GeoTIFF on a ~550 m grid."""
     jobs = [j for j in plan_jobs(cfg) if j.kind == "flood_layers"]
@@ -225,3 +266,155 @@ def _frequency_pixels(image: ee.Image, grid: rasters.Grid) -> np.ndarray:
             },
         }
     )
+
+
+# --- Local cache downloads -------------------------------------------------------------------------
+
+
+def layer_grid(root: str, year: int) -> rasters.Grid:
+    """The 100 m grid of the stored flood layers (every cached file uses it)."""
+    return layer_cache.grid_from_asset(ee.data.getAsset(f"{root}/flood_layers_{year}"))
+
+
+def _fetch_tile(image: ee.Image, grid: rasters.Grid, file_format: str = "GEO_TIFF", tries: int = 5):
+    """One tile (GeoTIFF bytes, or a numpy array) and the EECU-seconds the profiler measured for it.
+
+    GEO_TIFF comes back compressed (about 0.1 MB for a tile that is 20 MB as a numpy array), so
+    tiles are saved as Earth Engine returns them. Transient errors are retried. The profiler hook is
+    per thread in the Earth Engine client, so each worker thread profiles its own requests.
+    """
+    import io
+    import time
+
+    request = {
+        "expression": image,
+        "fileFormat": file_format,
+        "grid": {
+            "dimensions": {"width": grid.width, "height": grid.height},
+            "affineTransform": {
+                "scaleX": grid.cell,
+                "shearX": 0,
+                "translateX": grid.west,
+                "shearY": 0,
+                "scaleY": -grid.cell,
+                "translateY": grid.north,
+            },
+            "crsCode": "EPSG:4326",
+        },
+    }
+    for attempt in range(tries):
+        buffer = io.StringIO()
+        pixels = None
+        try:
+            with ee.profilePrinting(destination=buffer):
+                pixels = ee.data.computePixels(request)
+            return pixels, profile_eecu_seconds(buffer.getvalue())
+        except ee.EEException as error:
+            if pixels is not None and "Profile" in str(error):
+                # The pixels arrived but the profile couldn't be fetched (this happens now and then
+                # under parallel load): keep them, and let the caller estimate the cost.
+                return pixels, None
+            transient = any(
+                w in str(error) for w in ("Too many", "429", "500", "503", "timed out", "Deadline")
+            )
+            if not transient or attempt == tries - 1:
+                raise
+            time.sleep(10 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
+def download_cache(
+    grid: rasters.Grid,
+    files: list[tuple[layer_cache.CacheFile, ee.Image]],
+    cache_dir: Path,
+    tile_px: int,
+    workers: int,
+    log=print,
+) -> dict[str, float]:
+    """Download every layer's missing tiles into the cache. Returns EECU-seconds used per layer.
+
+    Safe to run again: tiles already saved are skipped. Each worker fetches a tile and saves it.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def fetch_and_save(folder: Path, image: ee.Image, tile: tuple[int, int, int, int]) -> float | None:
+        data, eecu = _fetch_tile(image, layer_cache.tile_grid(grid, *tile))
+        layer_cache.save_tile(folder, tile[0], tile[1], data)
+        return eecu
+
+    used: dict[str, float] = {}
+    for spec, image in files:
+        folder = layer_cache.layer_dir(cache_dir, spec.name)
+        layer_cache.create(folder, grid, spec, tile_px)
+        todo = layer_cache.missing_tiles(folder, grid, tile_px)
+        used[spec.name] = 0.0
+        if not todo:
+            log(f"{spec.name}: already complete")
+            continue
+        ordered = image.select(list(spec.bands))
+        unmeasured = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(fetch_and_save, folder, ordered, t) for t in todo]
+            for n, future in enumerate(as_completed(futures), start=1):
+                eecu = future.result()
+                if eecu is None:
+                    unmeasured += 1
+                else:
+                    used[spec.name] += eecu
+                if n % 33 == 0 or n == len(todo):
+                    log(f"{spec.name}: {n}/{len(todo)} tiles, {used[spec.name]:.0f} EECU-s so far")
+        if unmeasured:
+            measured = len(todo) - unmeasured
+            estimate = used[spec.name] / measured * unmeasured if measured else 0.0
+            used[spec.name] += estimate
+            log(
+                f"{spec.name}: {unmeasured} tiles had no profile; added {estimate:.0f} EECU-s (measured mean)"
+            )
+    return used
+
+
+def download_pixel_area(grid: rasters.Grid, path: Path) -> np.ndarray:
+    """Earth Engine's area of one pixel in each grid row, in km2 (it depends only on latitude)."""
+    column = layer_cache.tile_grid(grid, 0, grid.width // 2, grid.height, 1)
+    image = ee.Image.pixelArea().divide(1e6).toDouble().rename("km2")
+    pixels, _ = _fetch_tile(image, column, file_format="NUMPY_NDARRAY")
+    area = np.asarray(pixels["km2"], dtype="float64").reshape(grid.height)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, area)
+    return area
+
+
+def optical_clear_names(years: list[int]) -> dict[int, str]:
+    return {year: f"optical_clear_{year}" for year in years}
+
+
+def submit_optical_clear(
+    cfg: Config, root: str, counties_gdf: gpd.GeoDataFrame, months_by_year: dict[int, list[str]]
+):
+    """Start a batch export of the Sentinel-2 clear-view layer for each year not done or running.
+
+    Batch exports cost far less than computing the layer tile by tile (the cost test measured 0.5-1.3
+    EECU-hours a month by tiles), and judging clear views on 200 m cells a quarter of 100 m.
+    """
+    from ssd_monitor import radar_fixes
+
+    country, search = country_to_ee(counties_gdf), search_area_to_ee(counties_gdf)
+    active = {n for n, op in operations().items() if op["metadata"].get("state") in ACTIVE_STATES}
+    done = existing_assets(root)
+    started = []
+    for year, name in optical_clear_names(list(months_by_year)).items():
+        if name in done or name in active:
+            continue
+        _, image = radar_fixes.optical_clear_file(cfg, search, months_by_year[year], name)
+        ee.batch.Export.image.toAsset(
+            image=image.clip(country),
+            description=DESCRIPTION_PREFIX + name,
+            assetId=f"{root}/{name}",
+            region=country.bounds(),
+            scale=cfg.radar_fix_test.optical_clear_scale_m,
+            crs="EPSG:4326",
+            maxPixels=MAX_PIXELS,
+            pyramidingPolicy={".default": "sample"},
+        ).start()
+        started.append(name)
+    return started

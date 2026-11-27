@@ -65,15 +65,48 @@ class FloodConfig:
     permanent_water: PermanentWaterConfig
     terrain: TerrainConfig
     min_connected_pixels: int
+    radar_fix: tuple[str, ...]
+    persistent_months: tuple[int, ...]
     years_per_task: int
     frequency_cell_deg: float
+
+
+@dataclass(frozen=True)
+class RadarFixTestConfig:
+    years: tuple[int, int]
+    burn_collection: str
+    burn_recent_months: int
+    burn_season_start_month: int
+    burn_season_end_month: int
+    hand_image: str
+    hand_thresholds_m: tuple[float, ...]
+    dark_reference_asset: str
+    scene_edge_m: float
+    jrc_monthly: str
+    jrc_yearly: str
+    jrc_near_m: float
+    wet_season_months: tuple[int, ...]
+    optical_clear_scale_m: float
+
+    def in_burn_season(self, month: int) -> bool:
+        """True for the months whose burn mask counts every burn since burn_season_start_month."""
+        start, end = self.burn_season_start_month, self.burn_season_end_month
+        return month >= start or month <= end if start > end else start <= month <= end
+
+
+@dataclass(frozen=True)
+class FloodCheckConfig:
+    low_lying_max_hand_m: float
+    low_lying_share_pct: float
+    old_flooded_pct_above: float
 
 
 @dataclass(frozen=True)
 class AlertThresholds:
     rain_pct_normal_below: float
     ndvi_anomaly_below: float
-    flooded_pct_above: float
+    flood_new_percentile: float
+    flood_new_min_km2: float
 
 
 @dataclass(frozen=True)
@@ -82,11 +115,16 @@ class Config:
     end_month: str
     boundaries: Path
     outputs: Path
+    cache: Path
     asset_folder: str
+    download_tile_px: int
+    download_workers: int
     rainfall: RainfallConfig
     vegetation: VegetationConfig
     flood: FloodConfig
+    radar_fix_test: RadarFixTestConfig
     alerts: AlertThresholds
+    flood_check: FloodCheckConfig
 
     @property
     def start_year(self) -> int:
@@ -113,18 +151,23 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         optical=OpticalConfig(**flood.pop("optical")),
         permanent_water=PermanentWaterConfig(**flood.pop("permanent_water")),
         terrain=TerrainConfig(**flood.pop("terrain")),
-        **flood,
+        **_tuples(flood),
     )
     cfg = Config(
         start_month=str(raw["period"]["start"]),
         end_month=str(raw["period"]["end"]),
         boundaries=root / raw["paths"]["boundaries"],
         outputs=root / raw["paths"]["outputs"],
+        cache=root / raw["paths"]["cache"],
         asset_folder=raw["earth_engine"]["asset_folder"],
+        download_tile_px=raw["earth_engine"]["download_tile_px"],
+        download_workers=raw["earth_engine"]["download_workers"],
         rainfall=RainfallConfig(**_tuples(raw["rainfall"])),
         vegetation=VegetationConfig(**_tuples(raw["vegetation"])),
         flood=flood_cfg,
+        radar_fix_test=RadarFixTestConfig(**_tuples(raw["radar_fix_test"])),
         alerts=AlertThresholds(**raw["alerts"]),
+        flood_check=FloodCheckConfig(**raw["flood_check"]),
     )
     validate(cfg)
     return cfg
@@ -145,6 +188,23 @@ def validate(cfg: Config) -> None:
     bad_passes = set(cfg.flood.sar.orbit_passes) - {"ASCENDING", "DESCENDING"}
     if bad_passes:
         raise ValueError(f"flood.sar.orbit_passes: unknown pass {sorted(bad_passes)}")
+    rt = cfg.radar_fix_test
+    if rt.years[0] > rt.years[1] or rt.years[1] > 2021:
+        raise ValueError(
+            f"radar_fix_test.years {rt.years}: must be in order and end by 2021 (JRC monthly water)"
+        )
+    months = (rt.burn_season_start_month, rt.burn_season_end_month, *rt.wet_season_months)
+    if any(not 1 <= m <= 12 for m in months):
+        raise ValueError("radar_fix_test: months must be 1-12")
+    known = {"burn_recent", "burn_season", "dark_reference", "scene_edge", "optical_veto", "optical_veto_dry"}
+    known |= {f"hand_over_{t:g}" for t in rt.hand_thresholds_m}
+    unknown = sorted(set(cfg.flood.radar_fix) - known)
+    if unknown:
+        raise ValueError(f"flood.radar_fix: unknown conditions {unknown}")
+    if any(not 1 <= m <= 12 for m in cfg.flood.persistent_months):
+        raise ValueError("flood.persistent_months: months must be 1-12")
+    if list(rt.hand_thresholds_m) != sorted(set(rt.hand_thresholds_m)):
+        raise ValueError("radar_fix_test.hand_thresholds_m must be distinct and increasing")
 
 
 def ee_project() -> str:

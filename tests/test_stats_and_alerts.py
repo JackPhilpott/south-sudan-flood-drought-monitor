@@ -7,9 +7,9 @@ import pytest
 from ssd_monitor.alerts import add_flags, describe
 from ssd_monitor.stats import (
     COUNTY_MONTHLY_COLUMNS,
+    add_detrended_anomaly,
     add_flood_shares,
     add_percent_of_normal,
-    add_standardised_anomaly,
     build_county_monthly,
     climatology,
     national_monthly,
@@ -104,17 +104,20 @@ def test_percent_of_normal_is_blank_in_dry_months():
     assert np.isnan(out.loc["2003-01", "rain_pct_normal"])  # ...but 600% of 5 mm is not reported
 
 
-def test_standardised_anomaly():
-    df = history({2001: 0.4, 2002: 0.5, 2003: 0.6, 2004: 0.3}, column="ndvi")
-    out = add_standardised_anomaly(df, (2001, 2003)).set_index("month")
-    assert out.loc["2004-06", "ndvi_baseline_mean"] == pytest.approx(0.5)
-    assert out.loc["2004-06", "ndvi_baseline_sd"] == pytest.approx(0.1)
-    assert out.loc["2004-06", "ndvi_anomaly"] == pytest.approx(-2.0)
+def test_detrended_anomaly_follows_each_county_trend():
+    # Over the baseline NDVI rises about 0.012 a year with a wobble; 2006 is far below the trend.
+    df = history({2001: 0.41, 2002: 0.41, 2003: 0.44, 2004: 0.43, 2005: 0.46, 2006: 0.40}, column="ndvi")
+    out = add_detrended_anomaly(df, (2001, 2005)).set_index("month")
+    assert out.loc["2006-06", "ndvi_expected"] == pytest.approx(0.466)  # 0.43 + 3 x 0.012, the line extended
+    assert out.loc["2006-06", "ndvi_residual_sd"] == pytest.approx(0.010954, abs=1e-6)  # sqrt(360e-6 / 3)
+    assert out.loc["2006-06", "ndvi_anomaly"] == pytest.approx(-6.025, abs=0.001)
+    # The baseline years sit close to their own line.
+    assert out.loc[[f"{y}-06" for y in range(2001, 2006)], "ndvi_anomaly"].abs().max() < 1.5
 
 
-def test_standardised_anomaly_is_blank_when_the_baseline_never_varies():
-    df = history({2001: 0.5, 2002: 0.5, 2003: 0.4}, column="ndvi")
-    out = add_standardised_anomaly(df, (2001, 2002))
+def test_detrended_anomaly_is_blank_without_enough_baseline_years():
+    df = history({2001: 0.5, 2002: np.nan, 2003: np.nan, 2004: 0.4, 2005: 0.45}, column="ndvi")
+    out = add_detrended_anomaly(df, (2001, 2004))
     assert out["ndvi_anomaly"].isna().all()
 
 
@@ -131,10 +134,13 @@ def test_flood_shares_are_percent_of_county_area():
             "flooded_sar_km2": [40.0],
             "flooded_optical_km2": [20.0],
             "observed_km2": [150.0],
+            "persistent_km2": [30.0],
+            "new_km2": [20.0],
         }
     )
     out = add_flood_shares(flood, areas).iloc[0]
     assert out["flooded_pct"] == 25.0 and out["flood_observed_pct"] == 75.0
+    assert out["new_pct"] == 10.0
 
 
 def test_flood_is_unknown_not_zero_when_nothing_was_observed():
@@ -147,10 +153,13 @@ def test_flood_is_unknown_not_zero_when_nothing_was_observed():
             "flooded_sar_km2": [0.0],
             "flooded_optical_km2": [0.0],
             "observed_km2": [0.0],
+            "persistent_km2": [0.0],
+            "new_km2": [0.0],
         }
     )
     out = add_flood_shares(flood, areas).iloc[0]
     assert np.isnan(out["flooded_km2"]) and np.isnan(out["flooded_pct"])
+    assert np.isnan(out["new_km2"]) and np.isnan(out["new_pct"])
     assert out["flood_observed_pct"] == 0.0
 
 
@@ -160,22 +169,38 @@ def test_flood_is_unknown_not_zero_when_nothing_was_observed():
 def test_flags_use_strict_thresholds_and_stay_blank_without_data(cfg):
     df = pd.DataFrame(
         {
+            "county_code": "A",
+            "month": ["2020-01", "2021-01", "2022-01"],
             "rain_pct_normal": [74.9, 75.0, np.nan],
             "ndvi_anomaly": [-1.01, -1.0, np.nan],
-            "flooded_pct": [10.01, 10.0, np.nan],
+            "new_km2": [0.0, 0.0, np.nan],
         }
     )
     out = add_flags(df, cfg.alerts)
-    for col in ("flag_rain_low", "flag_ndvi_low", "flag_flood"):
+    for col in ("flag_rain_low", "flag_ndvi_low"):
         assert out[col].tolist()[:2] == [True, False]
         assert out[col].isna().tolist() == [False, False, True]
+    assert out["flag_flood"].isna().tolist() == [False, False, True]
+
+
+def test_flood_flag_is_relative_to_the_county_own_record(cfg):
+    # One county's October new water over seven years: only the clearly unusual years are flagged,
+    # and never a year below the 10 km2 floor.
+    new = [2.0, 5.0, 20.0, 30.0, 12.0, 60.0, 15.0]
+    df = pd.DataFrame({"county_code": "A", "month": [f"{y}-10" for y in range(2019, 2026)], "new_km2": new})
+    out = add_flags(df.assign(rain_pct_normal=100.0, ndvi_anomaly=0.0), cfg.alerts)
+    assert out["flag_flood"].tolist() == [False, False, False, True, False, True, False]
+    tiny = df.assign(new_km2=[0.1, 0.2, 0.3, 0.4, 0.5, 9.0, 0.6])
+    assert not add_flags(tiny.assign(rain_pct_normal=100.0, ndvi_anomaly=0.0), cfg.alerts)["flag_flood"].any()
 
 
 def test_describe_states_each_rule(cfg):
     rules = describe(cfg.alerts)
     assert rules["flag_rain_low"] == "rainfall below 75% of normal"
     assert rules["flag_ndvi_low"] == "NDVI anomaly below -1 standard deviations"
-    assert rules["flag_flood"] == "more than 10% of the county flooded"
+    assert rules["flag_flood"] == (
+        "new water above the county's own 80th percentile for the month and at least 10 km²"
+    )
 
 
 # --- the county-month table and the national summary -------------------------------------
@@ -231,6 +256,8 @@ def test_national_rainfall_is_area_weighted():
             "rain_normal_mm": [100.0, 100.0],
             "ndvi_anomaly": [0.0, -2.0],
             "flooded_km2": [10.0, np.nan],
+            "persistent_km2": [4.0, np.nan],
+            "new_km2": [6.0, np.nan],
             "flag_rain_low": pd.array([False, True], dtype="boolean"),
             "flag_ndvi_low": pd.array([False, True], dtype="boolean"),
             "flag_flood": pd.array([False, pd.NA], dtype="boolean"),
@@ -241,6 +268,7 @@ def test_national_rainfall_is_area_weighted():
     assert out["rain_pct_normal"] == 40.0
     assert out["ndvi_anomaly"] == -1.5
     assert out["flooded_km2"] == 10.0 and out["flooded_pct"] == 2.5
+    assert (out["persistent_km2"], out["new_km2"]) == (4.0, 6.0)
     assert (out["counties_flag_rain_low"], out["counties_flag_flood"]) == (1, 0)
 
 
@@ -257,6 +285,7 @@ def test_month_picks_without_data():
         {
             "month": ["2020-01"],
             "flooded_km2": [np.nan],
+            "new_km2": [np.nan],
             "ndvi_anomaly": [np.nan],
             "counties_flag_ndvi_low": [0],
         }

@@ -77,3 +77,64 @@ def benchmark(cfg: FloodConfig, counties: ee.FeatureCollection, codes=SAMPLE_COU
             region = counties.filter(ee.Filter.eq("county_code", code)).geometry()
             rows.append({"county_code": code, "month": month} | agreement_km2(cfg, region, month).getInfo())
     return rows
+
+
+# --- Optical sensitivity (method update, item 5) -----------------------------------------------------
+# Does stricter cloud masking (or a stricter water threshold) explain the optical layer's low agreement
+# with JRC? The optical rule is re-run on a sample with each variant and scored like the others.
+# Sums are unweighted: Earth Engine's default weighted sum counts pixels with partial masks at part of
+# their area, which is what under-counted the first run's county tables.
+
+OPTICAL_SAMPLE_COUNTIES = (*SAMPLE_COUNTIES, "SS0801", "SS0804", "SS0805", "SS0203")
+OPTICAL_SAMPLE_MONTHS = ("2019-03", "2020-03", "2021-02", "2019-10", "2020-09", "2021-10")
+OPTICAL_VARIANTS = {
+    "current": ("cs_cdf", 0.6, 0.0),  # Cloud Score+ band, minimum clear score, MNDWI water threshold
+    "cs_cdf_070": ("cs_cdf", 0.7, 0.0),
+    "cs_cdf_080": ("cs_cdf", 0.8, 0.0),
+    "cs_060": ("cs", 0.6, 0.0),
+    "mndwi_010": ("cs_cdf", 0.6, 0.1),
+}
+
+
+def optical_variant(
+    opt, region: ee.Geometry, month: str, score_band: str, min_clear: float, mndwi_min: float
+):
+    """The optical water rule with another clear-sky test or water threshold: (water 0/1, seen 0/1)."""
+    start, end = month_window(month)
+    scenes = (
+        ee.ImageCollection(opt.collection)
+        .filterBounds(region)
+        .filterDate(start, end)
+        .filter(ee.Filter.lte("CLOUDY_PIXEL_PERCENTAGE", opt.max_scene_cloud_pct))
+        .linkCollection(ee.ImageCollection(opt.cloud_score_collection), [score_band])
+    )
+
+    def clear_mndwi(image):
+        clear = image.select(score_band).gte(min_clear)
+        return image.normalizedDifference(["B3", "B11"]).rename("mndwi").updateMask(clear)
+
+    median = with_fallback(scenes.map(clear_mndwi), ["mndwi"]).median()
+    seen = median.mask().gt(0).unmask(0, False)
+    return median.gt(mndwi_min).unmask(0, False), seen
+
+
+def optical_scores(cfg: FloodConfig, region: ee.Geometry, month: str) -> ee.Dictionary:
+    """km2 of JRC water and, per variant, the area seen, flagged and flagged as JRC water (JRC observed)."""
+    start, end = month_window(month)
+    jrc = ee.ImageCollection(JRC_MONTHLY).filterDate(start, end).first().unmask(0, False)
+    assessed = flood.excluded(cfg).Not()
+    jrc_observed = jrc.gt(0).And(assessed)
+    jrc_water = jrc.eq(JRC_WATER).And(assessed)
+    bands = [jrc_water.rename("jrc_water"), jrc_observed.rename("jrc_observed")]
+    for name, (score_band, min_clear, mndwi_min) in OPTICAL_VARIANTS.items():
+        water, seen = optical_variant(cfg.optical, region, month, score_band, min_clear, mndwi_min)
+        water = water.And(assessed)
+        bands += [
+            seen.And(assessed).rename(f"{name}_seen"),
+            water.And(jrc_observed).rename(f"{name}_flagged"),
+            water.And(jrc_water).rename(f"{name}_both"),
+        ]
+    image = ee.Image.cat(bands).multiply(ee.Image.pixelArea().divide(1e6))
+    return image.reduceRegion(
+        ee.Reducer.sum().unweighted(), region, cfg.scale_m, crs="EPSG:4326", maxPixels=1e10, tileScale=4
+    )

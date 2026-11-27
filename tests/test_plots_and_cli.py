@@ -33,7 +33,10 @@ def legend_labels(fig):
 
 def test_flood_frequency_map(frequency, counties_gdf):
     fig = plots.plot_flood_frequency(frequency, counties_gdf, "2019-2025", 100)
-    assert "Flood frequency, 2019-2025" in texts(fig)
+    assert "Open water, 2019-2025" in texts(fig)
+    assert "New water, 2019-2025" in texts(
+        plots.plot_flood_frequency(frequency, counties_gdf, "2019-2025", 100, True)
+    )
     assert "24 or more" in legend_labels(fig)
     assert any("Permanent water" in label for label in legend_labels(fig))
 
@@ -43,22 +46,25 @@ def test_national_chart_has_two_panels_and_labels_the_peak(tables, cfg):
     fig = plots.plot_national(national, cfg.alerts.rain_pct_normal_below, cfg.rainfall.min_normal_mm)
     top, bottom = fig.axes
     assert len(top.patches) == 84  # one bar per month (dry months have no height)
-    assert len(bottom.lines) == 1
+    stacked = [
+        c.get_label() for c in bottom.collections if c.get_label() in ("persistent water", "new water")
+    ]
+    assert stacked == ["persistent water", "new water"]
     assert any(t.get_text().startswith("October 2020:") for t in bottom.texts)
 
 
 def test_county_flood_map_outlines_flagged_counties(counties_gdf, tables, cfg):
     county_monthly, _ = tables
-    fig = plots.plot_county_flood(counties_gdf, county_monthly, "2020-10", cfg.alerts.flooded_pct_above)
-    assert "Flooded share of each county, October 2020" in texts(fig)
-    assert "Flagged: over 10%" in legend_labels(fig)
+    fig = plots.plot_county_flood(counties_gdf, county_monthly, "2020-10", cfg.alerts.flood_new_percentile)
+    assert "New water in each county, October 2020" in texts(fig)
+    assert "Flagged: above the county's\nown 80th percentile" in legend_labels(fig)
     labels = [t.get_text() for t in fig.axes[0].texts]
     assert "Bravo" in labels
 
 
 def test_county_map_marks_missing_data(counties_gdf, tables, cfg):
     county_monthly, _ = tables
-    fig = plots.plot_county_flood(counties_gdf, county_monthly, "2019-07", cfg.alerts.flooded_pct_above)
+    fig = plots.plot_county_flood(counties_gdf, county_monthly, "2019-07", cfg.alerts.flood_new_percentile)
     assert "No data" in legend_labels(fig)
 
 
@@ -78,18 +84,19 @@ def test_save_writes_a_png(tmp_path, frequency, counties_gdf):
 def test_build_and_plots_commands_run_offline(tmp_path, counties_gdf, raw, frequency):
     """The two CLI commands that rebuild everything from cached outputs, without Earth Engine."""
     config = yaml.safe_load((ROOT / "config.yml").read_text(encoding="utf-8"))
-    config["paths"] = {"boundaries": "counties.geojson", "outputs": "outputs"}
+    config["paths"] = {"boundaries": "counties.geojson", "outputs": "outputs", "cache": "cache"}
     (tmp_path / "config.yml").write_text(yaml.safe_dump(config), encoding="utf-8")
     save_counties(counties_gdf, tmp_path / "counties.geojson")
     for name, df in raw.items():
         (tmp_path / "outputs" / "raw").mkdir(parents=True, exist_ok=True)
         df.to_csv(tmp_path / "outputs" / "raw" / f"{name}.csv", index=False)
-    write_frequency(
-        tmp_path / "outputs" / "flood_frequency_2019_2025.tif",
-        np.round(frequency.months * 10),
-        np.round(frequency.excluded * 100),
-        frequency.grid,
-    )
+    for name in ("flood_frequency_2019_2025.tif", "new_water_frequency_2019_2025.tif"):
+        write_frequency(
+            tmp_path / "outputs" / name,
+            np.round(frequency.months * 10),
+            np.round(frequency.excluded * 100),
+            frequency.grid,
+        )
 
     monitor.main(["build", "--config", str(tmp_path / "config.yml")])
     monitor.main(["plots", "--config", str(tmp_path / "config.yml")])
@@ -102,6 +109,7 @@ def test_build_and_plots_commands_run_offline(tmp_path, counties_gdf, raw, frequ
         "county_ndvi_drought.png",
         "flood_frequency.png",
         "national_monthly.png",
+        "new_water_frequency.png",
     ]
 
 
@@ -109,7 +117,9 @@ def test_offline_modules_never_import_earth_engine():
     code = (
         "import sys; sys.path[:0] = ['src', 'scripts']; "
         "import monitor, ssd_monitor.stats, ssd_monitor.alerts, ssd_monitor.plots, ssd_monitor.tasks, "
-        "ssd_monitor.rasters, ssd_monitor.boundaries; print('ee' in sys.modules)"
+        "ssd_monitor.rasters, ssd_monitor.boundaries, ssd_monitor.layer_cache, ssd_monitor.local_fixes, "
+        "ssd_monitor.rebuild, ssd_monitor.flood_flags, ssd_monitor.fix_scores, ssd_monitor.pixel_classes, "
+        "ssd_monitor.ocha; print('ee' in sys.modules)"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True
